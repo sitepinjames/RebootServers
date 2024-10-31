@@ -32,12 +32,15 @@ pipeline {
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
                         return state.split('\n').every { it == 'stopped' }
                     }
-                     // Function to list already stopped instances
 
                     def listAlreadyStopped = { ids ->
-                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
-                        echo "Final Linux Instance states: for ${state}"
-                        return ids.findAll { !state.split('\n').contains('running') }
+                        def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
+                        echo " Linux Instance states: for ${states}"
+                         return ids.findAll { id ->
+                            def index = ids.indexOf(id)
+                            echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
+                            return states[index] == 'stopped'
+                         }
                     }
                     // Function to wait until all specified instances are stopped
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
@@ -69,8 +72,6 @@ pipeline {
                     //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
                     def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
                     def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
-                    //echo "Stopped Linux Instances: ${stoppedLinuxInstances}"
-                    //echo "Running Linux Instances: ${runningLinuxInstances}"
 
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
@@ -100,10 +101,19 @@ pipeline {
                         return state.split('\n').every { it == 'running' }
                     }
                     // Function to check if instances are stopped
+                    def areInstancesStopped = { ids ->
+                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
+                        return state.split('\n').every { it == 'stopped' }
+                    }
                     // Function to list already stopped instances
                     def listAlreadyStopped = { ids ->
-                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        return ids.findAll { !state.split('\n').contains('running') }
+                        def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
+                        echo " Linux Instance states: for ${states}"
+                        return ids.findAll { id ->
+                            def index = ids.indexOf(id)
+                            echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
+                            return states[index] == 'stopped'
+                            }
                     }
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
                         def waited = 0
@@ -198,12 +208,18 @@ pipeline {
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
                         return state.split('\n').every { it == 'stopped' }
                     }
-                    
-                     // Function to list already stopped instances
+
+                                    
                     def listAlreadyStopped = { ids ->
-                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        return ids.findAll { !state.split('\n').contains('running') }
+                        def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
+                        echo " Linux Instance states: for ${states}"
+                        return ids.findAll { id ->
+                            def index = ids.indexOf(id)
+                            echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
+                            return states[index] == 'stopped'
+                        }
                     }
+                    
                     // Function to wait until all specified instances are stopped
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
                         def waited = 0
@@ -277,9 +293,15 @@ pipeline {
                         return state.split('\n').every { it == 'stopped' }
                     }
                      // Function to list already stopped instances
+
                     def listAlreadyStopped = { ids ->
-                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        return ids.findAll { !state.split('\n').contains('running') }
+                        def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
+                        echo " Linux Instance states: for ${states}"
+                        return ids.findAll { id ->
+                             def index = ids.indexOf(id)
+                            echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
+                            return states[index] == 'stopped'
+                        }
                     }
 
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
