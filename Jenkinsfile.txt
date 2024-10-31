@@ -71,8 +71,8 @@ pipeline {
                         error "Timeout: Not all instances are stopped after ${maxWaitTime} seconds."
                     }       
                     // Define Linux instance IDs
-                    //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
-                    def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
+                    def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
+                    //def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
                     def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
 
                     if (runningLinuxInstances) {
