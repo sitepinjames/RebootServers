@@ -26,7 +26,7 @@ pipeline {
                 script {
                     echo ' Now Stopping these Following Linux Instances...'
                     // Add logic for stopping Linux instances
-                    def linuxInstances = readFile('linux_instances.txt').split('\n').collect { it.trim() } 
+                    def linuxInstances = readFile('LinuxInstances.txt').split('\n').collect { it.trim() } 
                     // Function to check if instances are stopped
                     def areInstancesStopped = { ids ->
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
