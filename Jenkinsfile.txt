@@ -24,7 +24,7 @@ pipeline {
             }
             steps {
                 script {
-                    echo 'Stopping Following Linux Instances...'
+                    echo 'Stopping these Following Linux Instances...'
                     // Add logic for stopping Linux instances
                     def linuxInstances = [
                         'i-06a6e3bedfc7e489c',
