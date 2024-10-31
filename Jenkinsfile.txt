@@ -26,43 +26,7 @@ pipeline {
                 script {
                     echo ' Now Stopping these Following Linux Instances...'
                     // Add logic for stopping Linux instances
-                    def linuxInstances = [
-                        'i-06a6e3bedfc7e489c',
-                        'i-0cf6387c11543434b',
-                        'i-0fd5ac3199e8d90c6',
-                        'i-0fe398d756a7674d5',
-                        'i-07627036355757a91',
-                        'i-0761d61e6bde41800',
-                        'i-0eb696d2e783b308d',
-                        'i-046fd7ae38db5cc02',
-                        'i-0bfc2f1385aa6359a',
-                        'i-0d95ef8470e999593',
-                        'i-0b00f288853c45601',
-                        'i-0cd49ce4c628a79da',
-                        'i-01b219308b776d8c9',
-                        'i-09e022c9f9922f17e',
-                        'i-08e44cbe5f2726e69',
-                        'i-041559ad9860a0a66',
-                        'i-014bd77e3a204255d',
-                        'i-09cf5898b393e8ef2',
-                        'i-0a126c66fc4d2c23d',
-                        'i-0592feca136527713',
-                        'i-0915e6a70c88170bb',
-                        'i-078874a30cf0f048e',
-                        'i-0f4871c3881d29215',
-                        'i-026b0179d602903cd',
-                        'i-07cb8ba0fdffbbb8b',
-                        'i-0933fe6d03daae3e3',
-                        'i-02ef0d40468629edc',
-                        'i-059de1e7893df8270',
-                        'i-0d4c882bd70f975ee',
-                        'i-03da1f9ed98ac198a',
-                        'i-030440635b4b39eed',
-                        'i-017d38ae484b7971f',
-                        'i-08bf7a06fd200a084',
-                        'i-0cdea2ed843caaddb',
-                        'i-07741514f61487741'
-                    ] 
+                    def linuxInstances = readFile('linux_instances.txt').split('\n').collect { it.trim() } 
                     // Function to check if instances are stopped
                     def areInstancesStopped = { ids ->
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
@@ -123,9 +87,9 @@ pipeline {
             steps {
                 script {
                     echo 'Stopping Pega Admin Servers...'
-                    def pegaSercoServers = ['i-0044d39fa602f4149','i-0d33dcd0d79ac69ad','i-03d6e2a434ca5b1b6','i-02565e5f7320ba59a'] // Pega Admin Serco for Low Env instances-dev-pro-imp                    def pegaAdmin2Servers = ['i-004ca4f23ea69fbd0','i-0b71fd6c038e422f3','i-05fa9b4e9020ad80b','i-0b4c64b4080e80d7c'] // Pega Admin2 for Low Env instances
-                    def pegaAdmin2Servers = ['i-004ca4f23ea69fbd0','i-0b71fd6c038e422f3','i-05fa9b4e9020ad80b','i-0b4c64b4080e80d7c'] // Pega Admin2 for Low Env instances
-                    def pegaAdmin3Servers = ['i-0731efcda09633997','i-032c68f31da216cec'] // Pega Admin3 for Low Env instances
+                    def pegaSercoServers = readFile('PagaAdminSerco.txt').split('\n').collect { it.trim() }// Pega Admin Serco for Low Env instances-dev-pro-imp    
+                    def pegaAdmin2Servers = readFile('PagaAdmin2.txt').split('\n').collect { it.trim() }// Pega Admin2 for Low Env instances
+                    def pegaAdmin3Servers = readFile('PagaAdmin3.txt').split('\n').collect { it.trim() }// Pega Admin3 for Low Env instances
                     /////////////////////////////////////////////////////////////////////////////////////////////////////////
                      // Function to check if instances are running
                     def areInstancesRunning = { ids ->
