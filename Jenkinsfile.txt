@@ -36,7 +36,7 @@ pipeline {
 
                     def listAlreadyStopped = { ids ->
                         def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        echo " Linux Instance states: for ${state}"
+                        echo " Linux Instance states: for ${states}"
                         return ids.findAll { id ->
                             def index = ids.indexOf(id)
                             echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
