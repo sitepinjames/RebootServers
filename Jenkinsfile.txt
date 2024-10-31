@@ -71,9 +71,11 @@ pipeline {
                         error "Timeout: Not all instances are stopped after ${maxWaitTime} seconds."
                     }       
                     // Define Linux instance IDs
-                    def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
-                    //def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
+                    //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
+                    def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
                     def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
+                    echo "Stopped Linux Instances: ${stoppedLinuxInstances}"
+                    echo "Running Linux Instances: ${runningLinuxInstances}"
 
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
