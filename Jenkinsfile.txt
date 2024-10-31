@@ -361,7 +361,7 @@ pipeline {
                 script {
                     echo 'Starting Database Servers...'
 
-                    def firstDatabase = readFile('FirstDatabase.txt').split('\n').collect { it.trim() } /
+                    def firstDatabase = readFile('FirstDatabase.txt').split('\n').collect { it.trim() } 
                     def secondDatabase = readFile('SecondDatabase.txt').split('\n').collect { it.trim() }
 
                     def areInstancesRunning = { ids ->
