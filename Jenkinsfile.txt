@@ -34,7 +34,7 @@ pipeline {
                     }
                      // Function to list already stopped instances
 
-                    def listAlreadyStopped2 = { ids ->
+                    def listAlreadyStopped = { ids ->
                         def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State[].Name' --output text", returnStdout: true).trim().split()
                         echo "Linux Instance states: for ${state}"
                         return ids.findAll { !state.split('\n').contains('running') }
