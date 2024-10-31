@@ -553,8 +553,7 @@ pipeline {
         stage('Start Linux Instances') {
             when {
                 expression { 
-                    (params.Platform == 'Linux' && params.ResumeFailure == 'StartLinux') || 
-                    (params.Platform == 'All' && params.ResumeFailure == 'StartLinux') ||
+                    (params.Platform == ' ' && params.ResumeFailure == 'StartLinux') || 
                     (params.Platform == 'Linux' || params.Platform == 'All')
                     
                 }
