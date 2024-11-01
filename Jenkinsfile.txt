@@ -70,6 +70,7 @@ pipeline {
                     //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
                     def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
                     def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
+                    echo "Stopped Linux Instances: ${stoppedLinuxInstances}"
 
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
