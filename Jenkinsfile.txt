@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     parameters {
-        choice(name: 'Platform', choices: [ '', 'Linux', 'Windows', 'All'], description: 'Select instance type to manage')
+        choice(name: 'Platform', choices: ['Linux', 'Windows', 'All'], description: 'Select instance type to manage')
         
     }
 
