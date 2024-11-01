@@ -41,7 +41,7 @@ pipeline {
                          }
                     }
                     // Function to wait until all specified instances are stopped
-                    def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
+                    def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 20 ->
                         def waited = 0
                         while (waited < maxWaitTime) {
                             def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
@@ -75,7 +75,7 @@ pipeline {
 
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
-                        waitForInstancesToStop(runningLinuxInstances,600,10)
+                        waitForInstancesToStop(runningLinuxInstances,600,20)
                     }
 
                     if (stoppedLinuxInstances) {
