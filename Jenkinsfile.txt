@@ -557,7 +557,6 @@ pipeline {
             when {
                 expression { params.Platform == 'Linux' || params.Platform == 'All' }
                 }
-            }
             
             steps {
                 script {
