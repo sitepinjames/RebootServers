@@ -38,11 +38,11 @@ pipeline {
                         return ids.findAll { id ->
                             def index = ids.indexOf(id)
                             echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
-                            return states[index].trim() == 'stopped'
+                            return states[index] == 'stopped'
                          }
                     }
                     // Function to wait until all specified instances are stopped
-                    def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 20 ->
+                    def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
                         def waited = 0
                         while (waited < maxWaitTime) {
                             def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
@@ -76,7 +76,7 @@ pipeline {
 
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
-                        waitForInstancesToStop(runningLinuxInstances,600,20)
+                        waitForInstancesToStop(runningLinuxInstances, 600, 15)
                     }
 
                     if (stoppedLinuxInstances) {
