@@ -18,7 +18,7 @@ pipeline {
                 }
             }
         }
-        stage('Now Stop Linux Instances') {
+        stage('Next Stop Linux Instances') {
             when {
                 expression { params.Platform == 'Linux' || params.Platform == 'All' }
             }
