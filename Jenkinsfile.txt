@@ -29,6 +29,11 @@ pipeline {
                     def linuxInstances = readFile('LinuxInstances.txt').split('\n').collect { it.trim() } 
                     sh "aws ec2 describe-instances --instance-ids i-078874a30cf0f048e --query 'Reservations[].Instances[].State.Name' --output text"
                     sh "aws ec2 describe-instances --instance-ids i-0f4871c3881d29215 --query 'Reservations[].Instances[].State.Name' --output text"
+                    // Are instances running"?
+                    def areInstancesRunning = { ids ->
+                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
+                        return state.split('\n').every { it == 'running' }
+                    }
                     // Function to check if instances are stopped
                     def areInstancesStopped = { ids ->
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
@@ -71,8 +76,8 @@ pipeline {
                     }       
                     // Define Linux instance IDs
                     //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
-                    def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
-                    def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
+                    def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
+                    def runningLinuxInstances = areInstancesRunning(linuxInstances)
                     echo "Stopped Linux Instances: ${stoppedLinuxInstances}"
                     echo "Running Linux Instances: ${runningLinuxInstances}"
 
