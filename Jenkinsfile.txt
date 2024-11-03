@@ -32,7 +32,7 @@ pipeline {
                     // Are instances running"?
                     def areInstancesRunning = { ids ->
                         def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        echo "Raw output from describe-instances: ${state}"
+                        echo " The Raw output from describe-instances: ${state}"
                         return state.split('\n').every { it == 'running' }
                     }
                     // Function to check if instances are stopped
@@ -41,14 +41,18 @@ pipeline {
                         return state.split('\n').every { it == 'stopped' }
                     }
 
-                    def listAlreadyStopped = { ids ->
-                        def states = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim().split()
-                        echo "Raw states: ${states}"
-                        return ids.findAll { id ->
-                            def index = ids.indexOf(id)
-                            echo "Checking ID: ${id} at Index: ${index} with State: ${states[index]}"
-                            return states[index] == 'stopped'
+                    def listAlreadyStopped(instanceIds) {
+                        def stopped = []
+                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${instanceIds.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
+                        def states = state.split('\n')
+                        states.eachWithIndex { state, index ->
+                            if (state == 'stopped') {
+                            stopped << instanceIds[index]
                          }
+
+                        }
+                        echo "Stopped instances: ${stopped}"
+                        return stopped
                     }
                     // Function to wait until all specified instances are stopped
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
@@ -79,7 +83,7 @@ pipeline {
                     // Define Linux instance IDs
                     //def stoppedLinuxInstances = areInstancesStopped(linuxInstances)
                     def stoppedLinuxInstances = listAlreadyStopped(linuxInstances)
-                    def runningLinuxInstances = areInstancesRunning(linuxInstances)
+                    def runningLinuxInstances = linuxInstances - stoppedLinuxInstances
                     echo "Stopped Linux Instances: ${stoppedLinuxInstances}"
                     echo "Running Linux Instances: ${runningLinuxInstances}"
                     if (runningLinuxInstances) {
