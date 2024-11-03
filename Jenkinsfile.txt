@@ -24,15 +24,15 @@ pipeline {
             }
             steps {
                 script {
-                    echo ' Stopping The Following Linux Instances...'
+                    echo ' here Stopping The Following Linux Instances...'
                     // Add logic for stopping Linux instances
                     def linuxInstances = readFile('LinuxInstances.txt').split('\n').collect { it.trim() } 
                     sh "aws ec2 describe-instances --instance-ids i-078874a30cf0f048e --query 'Reservations[].Instances[].State.Name' --output text"
                     sh "aws ec2 describe-instances --instance-ids i-0f4871c3881d29215 --query 'Reservations[].Instances[].State.Name' --output text"
                     // Are instances running"?
                     def areInstancesRunning = { ids ->
-                        def state1 = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        echo "Raw output from describe-instances: ${state1}"
+                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
+                        echo "Raw output from describe-instances: ${state}"
                         return state.split('\n').every { it == 'running' }
                     }
                     // Function to check if instances are stopped
