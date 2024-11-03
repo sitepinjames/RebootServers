@@ -54,7 +54,7 @@ pipeline {
                     def waitForInstancesToStop = { ids, maxWaitTime = 600, checkInterval = 15 ->
                         def waited = 0
                         while (waited < maxWaitTime) {
-                            def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim().split()
+                            def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
                             def states = state.split("\\s+")
                             echo "Instance states: ${states}"
                             // Check each state individually and log
