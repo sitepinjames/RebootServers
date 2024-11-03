@@ -31,8 +31,8 @@ pipeline {
                     sh "aws ec2 describe-instances --instance-ids i-0f4871c3881d29215 --query 'Reservations[].Instances[].State.Name' --output text"
                     // Are instances running"?
                     def areInstancesRunning = { ids ->
-                        def state = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
-                        echo "Raw output from describe-instances: ${state}"
+                        def state1 = sh(script: "aws ec2 describe-instances --instance-ids ${ids.join(' ')} --query 'Reservations[].Instances[].State.Name' --output text", returnStdout: true).trim()
+                        echo "Raw output from describe-instances: ${state1}"
                         return state.split('\n').every { it == 'running' }
                     }
                     // Function to check if instances are stopped
@@ -83,7 +83,7 @@ pipeline {
                     echo "Running Linux Instances: ${runningLinuxInstances}"
                     if (runningLinuxInstances) {
                         sh "aws ec2 stop-instances --instance-ids ${runningLinuxInstances.join(' ')}"
-                        waitForInstancesToStop(runningLinuxInstances, 600, 15)
+                        waitForInstancesToStop(runningLinuxInstances,600,15)
                     }
 
                     if (stoppedLinuxInstances) {
