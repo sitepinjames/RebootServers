@@ -16,8 +16,11 @@ jobs:
         uses: actions/checkout@v3
       - name: Set up Jenkinsfile Runner
         run: |
-          # Install Jenkinsfile Runner and dependencies
-          # Example: sudo apt-get install -y jenkinsfile-runner
+          sudo apt-get update && sudo apt-get install -y jenkinsfile-runner
+      - name: Check installed dependencies
+        run: |
+          which jenkinsfile-runner
+          jenkinsfile-runner --version
       - name: Run Jenkins pipeline
         run: |
           jenkinsfile-runner -f Jenkinsfile -p BRANCH=${{ github.event.inputs.BRANCH }}
