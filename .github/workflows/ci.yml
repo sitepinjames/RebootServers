@@ -1,0 +1,17 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up Jenkinsfile Runner
+        run: |
+          # Install Jenkinsfile Runner and dependencies
+          # Example: sudo apt-get install -y jenkinsfile-runner
+      - name: Run Jenkins pipeline
+        run: |
+          jenkinsfile-runner -f Jenkinsfile -p BRANCH=${{ github.ref }}
