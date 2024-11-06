@@ -1,6 +1,12 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+    inputs:
+      BRANCH:
+        description: 'Branch to build'
+        required: true
+        default: 'main'
 
 jobs:
   build:
@@ -14,4 +20,4 @@ jobs:
           # Example: sudo apt-get install -y jenkinsfile-runner
       - name: Run Jenkins pipeline
         run: |
-          jenkinsfile-runner -f Jenkinsfile -p BRANCH=${{ github.ref }}
+          jenkinsfile-runner -f Jenkinsfile -p BRANCH=${{ github.event.inputs.BRANCH }}
