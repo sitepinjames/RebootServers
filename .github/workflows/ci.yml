@@ -16,7 +16,11 @@ jobs:
         uses: actions/checkout@v3
       - name: Set up Jenkinsfile Runner
         run: |
-          sudo apt-get update && sudo apt-get install -y jenkinsfile-runner
+          sudo apt-get update
+          sudo apt-get install -y openjdk-11-jdk
+          curl -L -o jenkinsfile-runner.tar.gz https://repo.jenkins-ci.org/releases/io/jenkins/jenkinsfile-runner/1.0-alpha-5/jenkinsfile-runner-1.0-alpha-5.tar.gz
+          tar -xzvf jenkinsfile-runner.tar.gz
+          sudo mv jenkinsfile-runner /usr/local/bin/jenkinsfile-runner
       - name: Check installed dependencies
         run: |
           which jenkinsfile-runner
