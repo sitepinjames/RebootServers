@@ -1,0 +1,46 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1' // Set your AWS region
+        USERNAME = 'your-aws-username' // Set your AWS user name
+        ACCESS_KEYS = '' // Variable to hold the access keys
+        ZIP_FILE = 'access_keys.zip' // Name of the password-protected zip file
+        ENCRYPTION_PASSWORD = 'yourpassword' // Set an encryption password (this should be managed securely!)
+    }
+
+    stages {
+        stage('List Access Keys') {
+            steps {
+                script {
+                    // Command to list access keys for the specified AWS user
+                    ACCESS_KEYS = sh(script: "aws iam list-access-keys --user-name ${USERNAME} --region ${AWS_REGION} --output text", returnStdout: true).trim()
+                    
+                    // Write the access keys to a file
+                    writeFile(file: 'access_keys.txt', text: ACCESS_KEYS)
+                    
+                    // Create a password-protected ZIP file
+                    sh(script: "zip -P ${ENCRYPTION_PASSWORD} ${ZIP_FILE} access_keys.txt")
+                    
+                    // Optionally delete the plain text file for security
+                    sh(script: "rm access_keys.txt")
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Send an email with the encrypted ZIP file as an attachment
+            emailext(
+                to: 'recipient@example.com',
+                subject: 'Encrypted AWS Access Keys for User: ${USERNAME}',
+                body: """
+                    Please find the attached password-protected ZIP file containing the access keys for user ${USERNAME}.
+                    Use the following password to open it: ${ENCRYPTION_PASSWORD}
+                """,
+                attachmentsPattern: "${ZIP_FILE}"
+            )
+        }
+    }
+}
