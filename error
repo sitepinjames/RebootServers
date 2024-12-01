@@ -1,0 +1,56 @@
++ aws sts assume-role --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role --role-session-name session --output text --query Credentials
++ cat
+++ cut -f1 /tmp/role-creds.txt
+++ cut -f3 /tmp/role-creds.txt
+++ cut -f4 /tmp/role-creds.txt
++ mkdir -p /root/.aws
++ cp -v .aws-creds /root/.aws/credentials
+'.aws-creds' -> '/root/.aws/credentials'
++ unset AWS_WEB_IDENTITY_TOKEN_FILE
++ aws sts get-caller-identity
+{
+    "UserId": "AROA5AOTVWVJSFATT5IYI:session",
+    "Account": "894333990227",
+    "Arn": "arn:aws:sts::894333990227:assumed-role/cloudbee-eacms-role/session"
+}
+[Pipeline] sh
++ cut -f1 /tmp/role-creds.txt
+[Pipeline] sh
++ cut -f3 /tmp/role-creds.txt
+[Pipeline] sh
++ cut -f4 /tmp/role-creds.txt
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Checking Keys Age and Rotate)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] script (hide)
+[Pipeline] {
+[Pipeline] readFile
+[Pipeline] sh
++ date +%Y-%m-%d
+[Pipeline] echo
+Current Date: 2024-12-01
+[Pipeline] sh
+/home/jenkins/agent/workspace/EmailTest@tmp/durable-a6fbd29a/script.sh.copy: line 1: unexpected EOF while looking for matching `''
+[Pipeline] echo
+Error occurred during key rotation: hudson.AbortException: script returned exit code 2
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] }
+[Pipeline] // podTemplate
+[Pipeline] End of Pipeline
+Finished: SUCCESS
