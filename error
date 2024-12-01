@@ -1,3 +1,5 @@
++ date -d 2024-11-27T18:44:00+00:00 +%s
+[Pipeline] sh
 + aws iam get-access-key-last-used --access-key-id AKIA5AOTVWVJY4N2O262
 [Pipeline] readJSON
 [Pipeline] sh
@@ -9,15 +11,3 @@ Invalid length for parameter AccessKeyId, value: 4, valid min length: 16
 Error occurred during key rotation: hudson.AbortException: script returned exit code 252
 [Pipeline] }
 [Pipeline] // script
-[Pipeline] }
-[Pipeline] // container
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] }
-[Pipeline] // withEnv
-[Pipeline] }
-[Pipeline] // node
-[Pipeline] }
-[Pipeline] // podTemplate
-[Pipeline] End of Pipeline
-Finished: SUCCESS
