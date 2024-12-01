@@ -104,12 +104,17 @@ EOF
                                         def creationDate = key.CreateDate
                                         def accessKeyId = key.AccessKeyId
                                         echo "Processing key ID: ${accessKeyId} for user: ${USER}"
+                                        
                                         if (accessKeyId) {
                                             def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${accessKeyId}", returnStdout: true).trim()
                                             def lastUsedDateRaw = jsonSlurper.parseText(lastUsed)
                                             def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
-                                            def lastUsedDate = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim() : "none"
+                                            def lastUsedDate = "none"
 
+                                            if (serviceName != "N/A") {
+                                                lastUsedDate = sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim()
+                                            }
+                                            
                                             if (keyStatus == "Active") {
                                                 ACTIVE_KEYS.add("${accessKeyId};${creationDate};${lastUsedDate}")
                                             } else {
@@ -150,10 +155,31 @@ EOF
                                         ACTIVE_KEYS.each { keyInfo ->
                                             def keyId, creationDate, lastUsedDate = keyInfo.split(";")
                                             echo "Processing key ID: ${keyId} for user: ${USER}"
+                                            
                                             if (keyId) {
                                                 def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
                                                 def lastUsedDateRaw = jsonSlurper.parseText(lastUsed)
                                                 def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
-                                                def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
+                                                def lastUsedDateTs = "invalid"
+
+                                                if (serviceName != "N/A") {
+                                                    lastUsedDateTs = sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong()
+                                                }
 
                                                 if (serviceName == "N/A") {
+                                                    keyWithNa = keyId
+                                                    sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion.' >> ${logfile}"
+                                                } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
+                                                    oldestLastUsedDateTs = lastUsedDateTs
+                                                    oldestKeyId = keyId
+                                                    oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
+                                                    sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}' >> ${logfile}"
+                                                }
+                                            } else {
+                                                echo "AccessKeyId is null or empty for user: ${USER}"
+                                            }
+                                        }
+
+                                        if (keyWithNa) {
+                                            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
+                                            sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})' >> ${logfile}"
