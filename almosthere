@@ -1,0 +1,203 @@
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-role
+  restartPolicy: Never
+  containers:
+  - name: awscli
+    image: amazon/aws-cli:latest
+    command: ['cat']
+    tty: true
+  - name: jnlp
+    image: jenkins/inbound-agent
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+  - name: mailer
+    image: curlimages/curl:7.85.0
+    command:
+    - sh
+    - -c
+    - 'while true; do sleep 30; done'
+"""
+        }
+    }
+
+    stages {
+        stage('AWS Config') {
+            steps {
+                container('awscli') {
+                    script {
+                        sh '''
+                        aws sts assume-role \
+                           --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role \
+                           --role-session-name session \
+                           --output text \
+                           --query Credentials \
+                           > /tmp/role-creds.txt
+
+                        cat > .aws-creds <<EOF
+[default]
+aws_access_key_id = $(cut -f1 /tmp/role-creds.txt)
+aws_secret_access_key = $(cut -f3 /tmp/role-creds.txt)
+aws_session_token = $(cut -f4 /tmp/role-creds.txt)
+EOF
+
+                        mkdir -p $HOME/.aws
+                        cp -v .aws-creds $HOME/.aws/credentials
+                        unset AWS_WEB_IDENTITY_TOKEN_FILE
+
+                        aws sts get-caller-identity
+                        '''
+
+                        env.AWS_ACCESS_KEY_ID = sh(script: "cut -f1 /tmp/role-creds.txt", returnStdout: true).trim()
+                        env.AWS_SECRET_ACCESS_KEY = sh(script: "cut -f3 /tmp/role-creds.txt", returnStdout: true).trim()
+                        env.AWS_SESSION_TOKEN = sh(script: "cut -f4 /tmp/role-creds.txt", returnStdout: true).trim()
+                    }
+                }
+            }
+        }
+        
+        stage('Checking Keys Age and Rotate') {
+            steps {
+                container('awscli') { 
+                    script {
+                        try {
+                            def USERS_FILE = readFile('users.txt').split('\n').collect { it.trim() }
+                            def OLD_KEYS_USERS = []
+                            
+                            // Enhanced error handling for CURRENT_DATE
+                            try {
+                                def CURRENT_DATE = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                                echo "Current Date: ${CURRENT_DATE}"
+                            } catch (Exception e) {
+                                echo "Error getting current date: ${e}"
+                            }
+
+                            isValidUsername = { username ->
+                                return username ==~ /^[a-zA-Z0-9+=,.@_-]+$/
+                            }
+
+                            USERS_FILE.each { USER ->
+                                if (!isValidUsername(USER)) {
+                                    sh "echo 'Invalid username: ${USER}. Skipping...' "
+                                    return
+                                }
+
+                                sh "echo 'Checking access keys for user: ${USER}' "
+                                def ACCESS_KEYS = sh(script: "aws iam list-access-keys --user-name ${USER} --output json", returnStdout: true).trim()
+                                def ACTIVE_KEYS = []
+                                def INACTIVE_KEY_ID = ""
+
+                                if (ACCESS_KEYS) {
+                                    def keys = readJSON text: ACCESS_KEYS
+                                    keys.AccessKeyMetadata.each { key ->
+                                        def keyStatus = key.Status
+                                        def creationDate = key.CreateDate
+                                        def accessKeyId = key.AccessKeyId
+                                        def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${accessKeyId}", returnStdout: true).trim()
+                                        def lastUsedDateRaw = readJSON text: lastUsed
+                                        def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
+                                        def lastUsedDate = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim() : "none"
+
+                                        if (keyStatus == "Active") {
+                                            ACTIVE_KEYS.add("${accessKeyId};${creationDate};${lastUsedDate}")
+                                        } else {
+                                            INACTIVE_KEY_ID = accessKeyId
+                                        }
+                                    }
+
+                                    if (ACTIVE_KEYS.size() == 1 && INACTIVE_KEY_ID) {
+                                        def keyInfo = ACTIVE_KEYS[0].split(";")
+                                        def activeCreationEpoch = sh(script: "date -d '${keyInfo[1]}' +%s", returnStdout: true).trim().toLong()
+                                        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
+
+                                        if (keyInfo[2] != "none" && (currentEpoch - activeCreationEpoch) > (30 * 24 * 3600)) {
+                                            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${INACTIVE_KEY_ID}"
+                                            sh "echo 'Deleted inactive access key for user: ${USER} (Key ID: ${INACTIVE_KEY_ID})' "
+                                            def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
+                                            def newAccessKey = readJSON text: newAccessKeyInfo
+                                            sh """
+                                            echo 'User: ${USER}' 
+                                            echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
+                                            echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
+                                            echo '-----------------------------------' 
+                                            """
+                                            sh "echo 'Created new access keys for user: ${USER} and saved ' "
+                                            OLD_KEYS_USERS.add(USER)
+                                        } else {
+                                            sh "echo 'The active key is not older than 30 days, no action taken. ' "
+                                        }
+                                    } else if (ACTIVE_KEYS.size() == 2) {
+                                        def oldestKeyId = ""
+                                        def oldestLastUsedDateTs = ""
+                                        def oldestLastUsedDateHuman = ""
+                                        def keyWithNa = ""
+
+                                        ACTIVE_KEYS.each { keyInfo ->
+                                            def keyId, creationDate, lastUsedDate = keyInfo.split(";")
+                                            def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
+                                            def lastUsedDateRaw = readJSON text: lastUsed
+                                            def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
+                                            def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
+
+                                            if (serviceName == "N/A") {
+                                                keyWithNa = keyId
+                                                sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion. ' "
+                                            } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
+                                                oldestLastUsedDateTs = lastUsedDateTs
+                                                oldestKeyId = keyId
+                                                oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
+                                                sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}' "
+                                            }
+                                        }
+
+                                        if (keyWithNa) {
+                                            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
+                                            sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})' "
+                                        } else {
+                                            def oldestCreationDate = sh(script: "date -d '${oldestKeyId.split(';')[1]}' +%s", returnStdout: true).trim().toLong()
+                                            def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
+
+                                            if ((currentEpoch - oldestCreationDate) > (30 * 24 * 3600)) {
+                                                sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${oldestKeyId}"
+                                                sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${oldestKeyId}), Last Used: ${oldestLastUsedDateHuman}' "
+                                                def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).
+                                                def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
+                                                def newAccessKey = readJSON text: newAccessKeyInfo
+                                                sh """
+                                                echo 'User: ${USER}' 
+                                                echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
+                                                echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
+                                                echo '-----------------------------------' 
+                                                """
+                                                sh "echo 'Created new access keys for user: ${USER} and saved' "
+                                                OLD_KEYS_USERS.add(USER)
+                                        } else {
+                                            sh "echo 'The active key is not older than 30 days, no action taken.' "
+                                        }
+                                    }
+                                } else {
+                                    sh "echo 'No valid conditions met for user: ${USER}.' "
+                                }
+                            } else {
+                                sh "echo 'No access keys found for user: ${USER}' "
+                            }
+                        }
+
+                        // Notify users about old keys rotation
+                        if (OLD_KEYS_USERS.size() > 0) {
+                            sh "echo 'Notification: The following users had old keys rotated: ${OLD_KEYS_USERS.join(", ")}"
+                        }
+                        } catch (Exception e) {
+                            echo "Error occurred during key rotation: ${e}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
