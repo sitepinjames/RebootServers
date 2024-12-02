@@ -36,9 +36,13 @@ User testuser3 has two active keys. Checking their last used dates...
 [Pipeline] echo
 Active Keys: [AKIA5AOTVWVJZLDWAA32;2024-11-27T17:37:23+00:00;1732733040, AKIA5AOTVWVJY4N2O262;2024-11-27T18:54:08+00:00;none]
 [Pipeline] echo
+Raw KeyInfo: AKIA5AOTVWVJZLDWAA32;2024-11-27T17:37:23+00:00;1732733040
+[Pipeline] echo
 KeyInfo Split - Key ID: null, Creation Date: null, Last Used Date: [AKIA5AOTVWVJZLDWAA32, 2024-11-27T17:37:23+00:00, 1732733040]
 [Pipeline] echo
 Invalid or null Access Key ID: null
+[Pipeline] echo
+Raw KeyInfo: AKIA5AOTVWVJY4N2O262;2024-11-27T18:54:08+00:00;none
 [Pipeline] echo
 KeyInfo Split - Key ID: null, Creation Date: null, Last Used Date: [AKIA5AOTVWVJY4N2O262, 2024-11-27T18:54:08+00:00, none]
 [Pipeline] echo
@@ -58,3 +62,7 @@ Error occurred during key rotation: java.lang.ArrayIndexOutOfBoundsException: In
 [Pipeline] }
 [Pipeline] // node
 [Pipeline] }
+[Pipeline] // podTemplate
+[Pipeline] End of Pipeline
+Finished: SUCCESS
+
