@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+    stages {
+        stage('Access Key Rotation') {
+            steps {
+                script {
+                    def logFile = "access_key_rotation.log"
+                    def outputDir = "access_keys"
+                    sh "mkdir -p ${outputDir}"
+
+                    // Fetch access keys for the user
+                    def accessKeys = sh(script: "aws iam list-access-keys --user-name ${USER} --output json", returnStdout: true).trim()
+                    def accessKeyMetadata = readJSON text: accessKeys
+
+                    def activeKeys = []
+                    def inactiveKeyId = ""
+
+                    // Loop through access keys
+                    accessKeyMetadata.AccessKeyMetadata.each { key ->
+                        def keyStatus = key.Status
+                        def creationDate = key.CreateDate
+                        def accessKeyId = key.AccessKeyId
+
+                        // Get last used date
+                        def accessKeyLastUsedRaw = sh(
+                            script: "aws iam get-access-key-last-used --access-key-id ${accessKeyId}",
+                            returnStdout: true
+                        ).trim()
+                        def lastUsedData = readJSON text: accessKeyLastUsedRaw
+                        def lastUsedDateRaw = lastUsedData?.AccessKeyLastUsed?.LastUsedDate ?: "none"
+
+                        def lastUsedDate = (lastUsedDateRaw != "none") ? Date.parse("yyyy-MM-dd'T'HH:mm:ss'Z'", lastUsedDateRaw).time : "none"
+
+                        // Logging creation date
+                        sh "echo '--Initial creation date for ${USER} is ${creationDate}--' >> ${logFile}"
+
+                        if (keyStatus == "Active") {
+                            activeKeys << [id: accessKeyId, creationDate: creationDate, lastUsedDate: lastUsedDate]
+                        } else {
+                            inactiveKeyId = accessKeyId
+                        }
+                    }
+
+                    // Process keys
+                    if (activeKeys.size() == 1 && inactiveKeyId) {
+                        def activeKey = activeKeys[0]
+                        def activeCreationDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss'Z'", activeKey.creationDate).time
+                        def currentEpoch = System.currentTimeMillis()
+
+                        if (activeKey.lastUsedDate != "none" && (currentEpoch - activeCreationDate) > (30 * 24 * 3600 * 1000)) {
+                            // Delete the inactive key
+                            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${inactiveKeyId}"
+                            sh "echo 'Deleted inactive access key for user: ${USER} (Key ID: ${inactiveKeyId})' >> ${logFile}"
+
+                            // Create a new access key
+                            def newAccessKey = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
+                            def newKeyData = readJSON text: newAccessKey
+                            def newAccessKeyId = newKeyData.AccessKey.AccessKeyId
+                            def newSecretAccessKey = newKeyData.AccessKey.SecretAccessKey
+
+                            def outputFile = "${outputDir}/${USER}_access_keys.txt"
+                            writeFile(file: outputFile, text: """
+                                User: ${USER}
+                                Access Key ID: ${newAccessKeyId} created on ${new Date().toString()}
+                                Secret Access Key: ${newSecretAccessKey} created on ${new Date().toString()}
+                                -----------------------------------
+                            """)
+
+                            sh "echo 'Created new access keys for user: ${USER} and saved to ${outputFile}' >> ${logFile}"
+                        } else {
+                            sh "echo 'The active key is not older than 30 days, no action taken.' >> ${logFile}"
+                        }
+                    } else {
+                        sh "echo 'No valid key rotation conditions met for user: ${USER}' >> ${logFile}"
+                    }
+                }
+            }
+        }
+    }
+}
