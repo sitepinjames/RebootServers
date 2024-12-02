@@ -1,4 +1,5 @@
 else if (ACTIVE_KEYS.size() == 2) {
+    sh "echo 'User $USER has two active keys. Checking their last used dates...'"
     def oldestKeyId = ""
     def oldestLastUsedDateTs = ""
     def oldestLastUsedDateHuman = ""
@@ -6,175 +7,12 @@ else if (ACTIVE_KEYS.size() == 2) {
 
     // Debug: Print active keys information
     echo "Active Keys: ${ACTIVE_KEYS}"
-
-    ACTIVE_KEYS.each { keyInfo ->
-        def keyId, creationDate, lastUsedDate = keyInfo.split(";")
-        
-        // Debug: Print each keyInfo split result
-        echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
-
-        if (!keyId || keyId.length() < 16) {
-            echo "Invalid or null Access Key ID: ${keyId}"
-            return
-        }
-
-        def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
-        def lastUsedDateRaw = readJSON text: lastUsed
-        def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
-        def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
-
-        // Debug: Print last used date information
-        echo "Key ID: ${keyId}, Last Used Date TS: ${lastUsedDateTs}, ServiceName: ${serviceName}"
-
-        if (serviceName == "N/A") {
-            keyWithNa = keyId
-            sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion.'"
-        } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
-            oldestLastUsedDateTs = lastUsedDateTs
-            oldestKeyId = keyId
-            oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
-            sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}'"
-        }
-    }
-
-    // Debug: Print decision making process
-    echo "KeyWithNa: ${keyWithNa}, OldestKeyId: ${oldestKeyId}"
-
-    if (keyWithNa) {
-        sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
-        sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})'"
-    } else {
-        def oldestCreationDate = sh(script: "date -d '${oldestKeyId.split(';')[1]}' +%s", returnStdout: true).trim().toLong()
-        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
-
-        if ((currentEpoch - oldestCreationDate) > (30 * 24 * 3600)) {
-            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${oldestKeyId}"
-            sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${oldestKeyId}), Last Used: ${oldestLastUsedDateHuman}'"
-            def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
-            def newAccessKey = readJSON text: newAccessKeyInfo
-            sh """
-            echo 'User: ${USER}' 
-            echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
-            echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
-            echo '-----------------------------------' 
-            """
-            sh "echo 'Created new access keys for user: ${USER} and saved'"
-            OLD_KEYS_USERS.add(USER)
-        } else {
-            sh "echo 'The active key is not older than 30 days, no action taken.'"
-        }
-    }
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-else if (ACTIVE_KEYS.size() == 2) {
-    def oldestKeyId = ""
-    def oldestLastUsedDateTs = ""
-    def oldestLastUsedDateHuman = ""
-    def keyWithNa = ""
-
-    // Debug: Print active keys information
-    echo "Active Keys: ${ACTIVE_KEYS}"
-
-    ACTIVE_KEYS.each { keyInfo ->
-        // Enhanced debugging: Print raw keyInfo
-        echo "Raw KeyInfo: ${keyInfo}"
-
-        // Attempt to split the keyInfo correctly
-        try {
-            def (keyId, creationDate, lastUsedDate) = keyInfo.split(";")
-
-            // Debug: Print each keyInfo split result
-            echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
-
-            if (!keyId || keyId.length() < 16) {
-                echo "Invalid or null Access Key ID: ${keyId}"
-                return
-            }
-
-            def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
-            def lastUsedDateRaw = readJSON text: lastUsed
-            def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
-            def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
-
-            // Debug: Print last used date information
-            echo "Key ID: ${keyId}, Last Used Date TS: ${lastUsedDateTs}, ServiceName: ${serviceName}"
-
-            if (serviceName == "N/A") {
-                keyWithNa = keyId
-                sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion.'"
-            } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
-                oldestLastUsedDateTs = lastUsedDateTs
-                oldestKeyId = keyId
-                oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
-                sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}'"
-            }
-        } catch (Exception e) {
-            echo "Error splitting keyInfo: ${e.message}"
-            return
-        }
-    }
-
-    // Debug: Print decision making process
-    echo "KeyWithNa: ${keyWithNa}, OldestKeyId: ${oldestKeyId}"
-
-    if (keyWithNa) {
-        sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
-        sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})'"
-    } else {
-        def oldestCreationDate = sh(script: "date -d '${oldestKeyId.split(';')[1]}' +%s", returnStdout: true).trim().toLong()
-        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
-
-        if ((currentEpoch - oldestCreationDate) > (30 * 24 * 3600)) {
-            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${oldestKeyId}"
-            sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${oldestKeyId}), Last Used: ${oldestLastUsedDateHuman}'"
-            def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
-            def newAccessKey = readJSON text: newAccessKeyInfo
-            sh """
-            echo 'User: ${USER}' 
-            echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
-            echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
-            echo '-----------------------------------' 
-            """
-            sh "echo 'Created new access keys for user: ${USER} and saved'"
-            OLD_KEYS_USERS.add(USER)
-        } else {
-            sh "echo 'The active key is not older than 30 days, no action taken.'"
-        }
-    }
-}
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-if (keyStatus == "Active") {
-    // Debug: Print the key status, ID, and dates
-    echo "Active Key Found - Key ID: ${accessKeyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
-
-    // Ensure all parts are correctly formatted and not null
-    if (accessKeyId && creationDate && lastUsedDate) {
-        ACTIVE_KEYS.add("${accessKeyId};${creationDate};${lastUsedDate}")
-    } else {
-        echo "Error: One or more parts of the key information are null or improperly formatted."
-    }
-} else {
-    INACTIVE_KEY_ID = accessKeyId
-}
-
-
-else if (ACTIVE_KEYS.size() == 2) {
-    def oldestKeyId = ""
-    def oldestLastUsedDateTs = ""
-    def oldestLastUsedDateHuman = ""
-    def keyWithNa = ""
-
-    // Debug: Print active keys information
-    echo "Active Keys: ${ACTIVE_KEYS}"
-
     ACTIVE_KEYS.each { keyInfo ->
         // Enhanced debugging: Print raw keyInfo
         echo "Raw KeyInfo: ${keyInfo}"
 
         // Adjusted split logic to handle potential issues
         def keyInfoParts = keyInfo.split(";")
-        
         if (keyInfoParts.size() == 3) {
             def keyId = keyInfoParts[0].trim()
             def creationDate = keyInfoParts[1].trim()
@@ -195,7 +33,6 @@ else if (ACTIVE_KEYS.size() == 2) {
 
             // Debug: Print last used date information
             echo "Key ID: ${keyId}, Last Used Date TS: ${lastUsedDateTs}, ServiceName: ${serviceName}"
-
             if (serviceName == "N/A") {
                 keyWithNa = keyId
                 sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion.'"
@@ -216,25 +53,31 @@ else if (ACTIVE_KEYS.size() == 2) {
     if (keyWithNa) {
         sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
         sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})'"
-    } else {
-        def oldestCreationDate = sh(script: "date -d '${oldestKeyId.split(';')[1]}' +%s", returnStdout: true).trim().toLong()
-        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
+    } 
 
-        if ((currentEpoch - oldestCreationDate) > (30 * 24 * 3600)) {
-            sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${oldestKeyId}"
-            sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${oldestKeyId}), Last Used: ${oldestLastUsedDateHuman}'"
-            def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
-            def newAccessKey = readJSON text: newAccessKeyInfo
-            sh """
-            echo 'User: ${USER}' 
-            echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
-            echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
-            echo '-----------------------------------' 
-            """
-            sh "echo 'Created new access keys for user: ${USER} and saved'"
-            OLD_KEYS_USERS.add(USER)
-        } else {
-            sh "echo 'The active key is not older than 30 days, no action taken.'"
+    if (oldestKeyId) {
+        try {
+            def oldestCreationDate = sh(script: "date -d '${oldestKeyId.split(';')[1]}' +%s", returnStdout: true).trim().toLong()
+            def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
+
+            if ((currentEpoch - oldestCreationDate) > (3 * 24 * 3600)) {
+                sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${oldestKeyId}"
+                sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${oldestKeyId}), Last Used: ${oldestLastUsedDateHuman}'"
+                def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
+                def newAccessKey = readJSON text: newAccessKeyInfo
+                sh """
+                echo 'User: ${USER}' 
+                echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
+                echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
+                echo '-----------------------------------' 
+                """
+                sh "echo 'Created new access keys for user: ${USER} and saved'"
+                OLD_KEYS_USERS.add(USER)
+            } else {
+                sh "echo 'The active key is not older than 30 days, no action taken.'"
+            }
+        } catch (Exception e) {
+            echo "Error processing oldest key: ${e}"
         }
     }
 }
