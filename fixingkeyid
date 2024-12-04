@@ -1,130 +1,107 @@
-if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
-    oldestLastUsedDateTs = lastUsedDateTs
-    oldestKeyId = keyId + ";" + creationDate + ";" + lastUsedDate
-    oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
-    sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}'"
-}
-
-if (oldestKeyId) {
-    try {
-        def keyInfoParts = oldestKeyId.split(";")
-        if (keyInfoParts.size() == 3) {
-            def oldestCreationDate = sh(script: "date -d '${keyInfoParts[1]}' +%s", returnStdout: true).trim().toLong()
-            def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
-
-            if ((currentEpoch - oldestCreationDate) > (3 * 24 * 3600)) {
-                sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyInfoParts[0]}"
-                sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${keyInfoParts[0]}), Last Used: ${oldestLastUsedDateHuman}'"
-                def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
-                def newAccessKey = readJSON text: newAccessKeyInfo
-                sh """
-                echo 'User: ${USER}' 
-                echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
-                echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
-                echo '-----------------------------------' 
-                """
-                sh "echo 'Created new access keys for user: ${USER} and saved'"
-                OLD_KEYS_USERS.add(USER)
-            } else {
-                sh "echo 'The active key is not older than 30 days, no action taken.'"
-            }
-        } else {
-            echo "Error: Invalid format for oldestKeyId: ${oldestKeyId}"
-        }
-    } catch (Exception e) {
-        echo "Error processing oldest key: ${e}"
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-
-else if (ACTIVE_KEYS.size() == 2) {
-    sh "echo 'User $USER has two active keys. Checking their last used dates...'"
-    def oldestKeyId = ""
-    def oldestLastUsedDateTs = ""
-    def oldestLastUsedDateHuman = ""
-    def keyWithNa = ""
-
-    // Debug: Print active keys information
-    echo "Active Keys: ${ACTIVE_KEYS}"
-    ACTIVE_KEYS.each { keyInfo ->
-        // Enhanced debugging: Print raw keyInfo
-        echo "Raw KeyInfo: ${keyInfo}"
-
-        // Adjusted split logic to handle potential issues
-        def keyInfoParts = keyInfo.split(";")
-        if (keyInfoParts.size() == 3) {
-            def keyId = keyInfoParts[0].trim()
-            def creationDate = keyInfoParts[1].trim()
-            def lastUsedDate = keyInfoParts[2].trim()
-
-            // Debug: Print each keyInfo split result
-            echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
-
-            if (!keyId || keyId.length() < 16) {
-                echo "Invalid or null Access Key ID: ${keyId}"
-                return
-            }
-
-            def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
-            def lastUsedDateRaw = readJSON text: lastUsed
-            def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
-            def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
-
-            // Debug: Print last used date information
-            echo "Key ID: ${keyId}, Last Used Date TS: ${lastUsedDateTs}, ServiceName: ${serviceName}"
-            if (serviceName == "N/A") {
-                keyWithNa = keyId
-                sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion.'"
-            } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
-                oldestLastUsedDateTs = lastUsedDateTs
-                oldestKeyId = keyId + ";" + creationDate + ";" + lastUsedDate
-                oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
-                sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}'"
-            }
-        } else {
-            echo "Error: Unexpected keyInfo format: ${keyInfo}"
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-role
+  restartPolicy: Never
+  containers:
+  - name: awscli
+    image: amazon/aws-cli:latest
+    command: ['cat']
+    tty: true
+  - name: jnlp
+    image: jenkins/inbound-agent
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+  - name: mailer
+    image: curlimages/curl:7.85.0
+    command:
+    - sh
+    - -c
+    - 'while true; do sleep 30; done'
+"""
         }
     }
+  
+    environment {
+        ACCESS_KEYS = ''
+        
+    }
+    stages {
+            stage('aws config') {
+               steps {
+                   container('awscli') {
+                       script {
+                            sh '''
+                            # Generate the credentials file
+                            aws sts assume-role \
+                               --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role \
+                               --role-session-name session \
+                               --output text \
+                               --query Credentials \
+                               > /tmp/role-creds.txt
+                            cat > .aws-creds <<EOF
+[default]
+aws_access_key_id = $(cut -f1 /tmp/role-creds.txt)
+aws_secret_access_key = $(cut -f3 /tmp/role-creds.txt)
+aws_session_token = $(cut -f4 /tmp/role-creds.txt)
+EOF
 
-    // Debug: Print decision making process
-    echo "KeyWithNa: ${keyWithNa}, OldestKeyId: ${oldestKeyId}"
+                            # Copy the credentials file to its default location and remove variable from
+                            # the shell environment to assume role in the ADO account.
+                            mkdir -p $HOME/.aws
+                            cp -v .aws-creds $HOME/.aws/credentials
+                            unset AWS_WEB_IDENTITY_TOKEN_FILE
 
-    if (keyWithNa) {
-        sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyWithNa}"
-        sh "echo 'Deleted access key that was never used for user: ${USER} (Key ID: ${keyWithNa})'"
-    } 
+                            # Run AWS command to test the assume role. 
+                            aws sts get-caller-identity
+                            '''
+                        
+                            // Set environment variables for AWS credentials
+                            def awsAccessKeyId = sh(script: "cut -f1 /tmp/role-creds.txt", returnStdout: true).trim()
+                            def awsSecretAccessKey = sh(script: "cut -f3 /tmp/role-creds.txt", returnStdout: true).trim()
+                            def awsSessionToken = sh(script: "cut -f4 /tmp/role-creds.txt", returnStdout: true).trim()
 
-    if (oldestKeyId) {
-        try {
-            def keyInfoParts = oldestKeyId.split(";")
-            if (keyInfoParts.size() == 3) {
-                def oldestCreationDate = sh(script: "date -d '${keyInfoParts[1]}' +%s", returnStdout: true).trim().toLong()
-                def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong()
-
-                if ((currentEpoch - oldestCreationDate) > (3 * 24 * 3600)) {
-                    sh "aws iam delete-access-key --user-name ${USER} --access-key-id ${keyInfoParts[0]}"
-                    sh "echo 'Deleted oldest active access key for user: ${USER} (Key ID: ${keyInfoParts[0]}), Last Used: ${oldestLastUsedDateHuman}'"
-                    def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${USER} --output json", returnStdout: true).trim()
-                    def newAccessKey = readJSON text: newAccessKeyInfo
-                    sh """
-                    echo 'User: ${USER}' 
-                    echo 'Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} created on ${CURRENT_DATE}' 
-                    echo 'Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} created on ${CURRENT_DATE}' 
-                    echo '-----------------------------------' 
-                    """
-                    sh "echo 'Created new access keys for user: ${USER} and saved'"
-                    OLD_KEYS_USERS.add(USER)
-                } else {
-                    sh "echo 'The active key is not older than 30 days, no action taken.'"
+                            env.AWS_ACCESS_KEY_ID = awsAccessKeyId
+                            env.AWS_SECRET_ACCESS_KEY = awsSecretAccessKey
+                            env.AWS_SESSION_TOKEN = awsSessionToken
+                       }
+                   }
+               }
+            }
+            
+            stage('Creating access key') {
+                steps {
+                   container('awscli') { 
+                       script {
+                           //sh "aws iam create-access-key --user-name testuser --output json"
+                           def nextfinalaccesskey= sh(script: "aws iam list-access-keys --user-name testuser --output json", returnStdout: true).trim()
+                           writeFile file: 'access_keys.txt', text: nextfinalaccesskey
+                           echo "Anothertest"
+                       }
+                   }
                 }
-            } else {
-                echo "Error: Invalid format for oldestKeyId: ${oldestKeyId}"
             }
-        } catch (Exception e) {
-            echo "Error processing oldest key: ${e}"
-        }
+                           
+                    
+            stage('Build') {
+                steps {
+                    echo " created access keys"
+                }
+            }
     }
-}
-
+            post {
+                always {
+                    emailext (
+                        to : 'michael.myemail@example.com',
+                        subject: 'Build Notification',
+                        body: 'Please find the encrypted access keys attached.', 
+                        attachmentsPattern: 'access_keys.txt'
+                    
+                    )
+                }
+            }
+    }
+    
