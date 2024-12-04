@@ -15,93 +15,166 @@ spec:
   - name: jnlp
     image: jenkins/inbound-agent
     args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
-  - name: mailer
-    image: curlimages/curl:7.85.0
-    command:
-    - sh
-    - -c
-    - 'while true; do sleep 30; done'
+  - name: zip
+    image: alpine:latest
+    command: ['cat']
+    tty: true
 """
         }
     }
-  
+
+    environment {
+        ZIP_PASSWORD = credentials('zip_password') // Jenkins credentials
+    }
+
+    stages {
+        stage('Encrypt File') {
+            steps {
+                container('zip') {
+                    // Using the command directly without `sh`
+                    zip -P $ZIP_PASSWORD access_keys.zip access_keys.txt
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo "Access keys have been encrypted into a ZIP file."
+            }
+        }
+    }
+
+    post {
+        always {
+            emailext(
+                to: 'recipient@example.com',
+                subject: 'Build Notification',
+                body: 'Please find the encrypted access keys attached. Use the password to open the file.',
+                attachmentsPattern: 'access_keys.zip'
+            )
+        }
+    }
+}
+???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????/
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-role
+  restartPolicy: Never
+  containers:
+  - name: awscli
+    image: amazon/aws-cli:latest
+    command: ['cat']
+    tty: true
+  - name: zip
+    image: alpine:latest
+    command: ['cat']
+    tty: true
+    volumeMounts:
+    - mountPath: /usr/share/zoneinfo
+      name: tzdata
+  volumes:
+  - name: tzdata
+    hostPath:
+      path: /usr/share/zoneinfo
+  - name: jnlp
+    image: jenkins/inbound-agent
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+"""
+        }
+    }
+
     environment {
         ACCESS_KEYS = ''
-        
     }
+
     stages {
-            stage('aws config') {
-               steps {
-                   container('awscli') {
-                       script {
-                            sh '''
-                            # Generate the credentials file
-                            aws sts assume-role \
-                               --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role \
-                               --role-session-name session \
-                               --output text \
-                               --query Credentials \
-                               > /tmp/role-creds.txt
-                            cat > .aws-creds <<EOF
+        stage('AWS Config') {
+            steps {
+                container('awscli') {
+                    script {
+                        sh '''
+                        # Generate the credentials file
+                        aws sts assume-role \
+                           --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role \
+                           --role-session-name session \
+                           --output text \
+                           --query Credentials \
+                           > /tmp/role-creds.txt
+                        cat > .aws-creds <<EOF
 [default]
 aws_access_key_id = $(cut -f1 /tmp/role-creds.txt)
 aws_secret_access_key = $(cut -f3 /tmp/role-creds.txt)
 aws_session_token = $(cut -f4 /tmp/role-creds.txt)
 EOF
 
-                            # Copy the credentials file to its default location and remove variable from
-                            # the shell environment to assume role in the ADO account.
-                            mkdir -p $HOME/.aws
-                            cp -v .aws-creds $HOME/.aws/credentials
-                            unset AWS_WEB_IDENTITY_TOKEN_FILE
+                        # Copy the credentials file to its default location
+                        mkdir -p $HOME/.aws
+                        cp -v .aws-creds $HOME/.aws/credentials
+                        unset AWS_WEB_IDENTITY_TOKEN_FILE
 
-                            # Run AWS command to test the assume role. 
-                            aws sts get-caller-identity
-                            '''
-                        
-                            // Set environment variables for AWS credentials
-                            def awsAccessKeyId = sh(script: "cut -f1 /tmp/role-creds.txt", returnStdout: true).trim()
-                            def awsSecretAccessKey = sh(script: "cut -f3 /tmp/role-creds.txt", returnStdout: true).trim()
-                            def awsSessionToken = sh(script: "cut -f4 /tmp/role-creds.txt", returnStdout: true).trim()
+                        # Test the assume-role
+                        aws sts get-caller-identity
+                        '''
 
-                            env.AWS_ACCESS_KEY_ID = awsAccessKeyId
-                            env.AWS_SECRET_ACCESS_KEY = awsSecretAccessKey
-                            env.AWS_SESSION_TOKEN = awsSessionToken
-                       }
-                   }
-               }
-            }
-            
-            stage('Creating access key') {
-                steps {
-                   container('awscli') { 
-                       script {
-                           //sh "aws iam create-access-key --user-name testuser --output json"
-                           def nextfinalaccesskey= sh(script: "aws iam list-access-keys --user-name testuser --output json", returnStdout: true).trim()
-                           writeFile file: 'access_keys.txt', text: nextfinalaccesskey
-                           echo "Anothertest"
-                       }
-                   }
+                        // Set environment variables for AWS credentials
+                        def awsAccessKeyId = sh(script: "cut -f1 /tmp/role-creds.txt", returnStdout: true).trim()
+                        def awsSecretAccessKey = sh(script: "cut -f3 /tmp/role-creds.txt", returnStdout: true).trim()
+                        def awsSessionToken = sh(script: "cut -f4 /tmp/role-creds.txt", returnStdout: true).trim()
+
+                        env.AWS_ACCESS_KEY_ID = awsAccessKeyId
+                        env.AWS_SECRET_ACCESS_KEY = awsSecretAccessKey
+                        env.AWS_SESSION_TOKEN = awsSessionToken
+                    }
                 }
             }
-                           
-                    
-            stage('Build') {
-                steps {
-                    echo " created access keys"
+        }
+
+        stage('Create Access Key') {
+            steps {
+                container('awscli') {
+                    script {
+                        def nextAccessKey = sh(script: "aws iam list-access-keys --user-name testuser --output json", returnStdout: true).trim()
+                        writeFile file: 'access_keys.txt', text: nextAccessKey
+                        echo "Access keys created and saved."
+                    }
                 }
             }
+        }
+
+        stage('Encrypt File') {
+            steps {
+                container('zip') {
+                    sh '''
+                    apk add --no-cache zip
+                    zip -P secure_password access_keys.zip access_keys.txt
+                    '''
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo "Access keys file encrypted."
+            }
+        }
     }
-            post {
-                always {
-                    emailext (
-                        to : 'michael.myemail@example.com',
-                        subject: 'Build Notification',
-                        body: 'Please find the encrypted access keys attached.', 
-                        attachmentsPattern: 'access_keys.txt'
-                    
-                    )
-                }
-            }
+
+    post {
+        always {
+            emailext(
+                to: 'michael.myemail@example.com',
+                subject: 'Build Notification',
+                body: 'Please find the encrypted access keys attached. Use the password "secure_password" to open the file.',
+                attachmentsPattern: 'access_keys.zip'
+            )
+        }
     }
-    
+}
+
+
