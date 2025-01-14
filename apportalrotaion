@@ -1,0 +1,872 @@
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-role
+  restartPolicy: Never
+  containers:
+  - name: awscli
+    image: amazon/aws-cli:latest
+    command: ['cat']
+    tty: true
+  - name: zip
+    image: alpine:latest
+    command: ['cat']
+    tty: true
+    volumeMounts:
+    - mountPath: /usr/share/zoneinfo
+      name: tzdata
+  volumes:
+  - name: tzdata
+    hostPath:
+      path: /usr/share/zoneinfo  
+  - name: jnlp
+    image: jenkins/inbound-agent
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+  - name: mailer
+    image: curlimages/curl:7.85.0
+    command:
+    - sh
+    - -c
+    - 'while true; do sleep 30; done'
+"""
+        }
+    }
+   
+    stages {
+        stage('AWS Config') {
+            steps {
+                container('awscli') {
+                    script {
+                        sh '''
+                        aws sts assume-role \
+                           --role-arn arn:aws:iam::894333990227:role/delegatedadmin/developer/cloudbee-eacms-role \
+                           --role-session-name session \
+                           --output text \
+                           --query Credentials \
+                           > /tmp/role-creds.txt
+                        cat > .aws-creds <<EOF
+[default]
+aws_access_key_id = $(cut -f1 /tmp/role-creds.txt)
+aws_secret_access_key = $(cut -f3 /tmp/role-creds.txt)
+aws_session_token = $(cut -f4 /tmp/role-creds.txt)
+EOF
+                        mkdir -p $HOME/.aws
+                        cp -v .aws-creds $HOME/.aws/credentials
+                        unset AWS_WEB_IDENTITY_TOKEN_FILE
+                        aws sts get-caller-identity
+                        '''
+                        env.AWS_ACCESS_KEY_ID = sh(script: "cut -f1 /tmp/role-creds.txt", returnStdout: true).trim()
+                        env.AWS_SECRET_ACCESS_KEY = sh(script: "cut -f3 /tmp/role-creds.txt", returnStdout: true).trim()
+                        env.AWS_SESSION_TOKEN = sh(script: "cut -f4 /tmp/role-creds.txt", returnStdout: true).trim()
+                    }
+                }
+            }
+        }
+        stage('Checking Keys Age and Rotate') {
+            steps {
+                container('awscli') { 
+                    script {
+                            def USERS_FILE = readFile('users.txt').split('\n').collect { it.trim() }
+                            def OLD_KEYS_USERS = []
+                            def CURRENT_DATE = sh(script: "date -u +%Y-%m-%d' UTC'", returnStdout: true).trim()
+                            def paramstoretestuser= "/eacms/testingkey/testuser"
+                            def paramstoretestuserpw= "/eacms/testingkey/testuser/pw"
+                            def paramstoretestusercopy= "/eacms/testingkey/testuser/oldkey"
+                            def paramstoretestuserpwcopy= "/eacms/testingkey/testuser/pw/oldkey"
+                            def paramstoretestuser1= "/eacms/testingkey/testuser1"
+                            def paramstoretestuser1pw= "/eacms/testingkey/testuser1/pw"
+                            def paramstoretestuser1copy= "/eacms/testingkey/testuser1/oldkey"
+                            def paramstoretestuser1pwcopy= "/eacms/testingkey/testuser1/pw/oldkey"
+                            def paramstoretestuser2= "/eacms/testingkey/testuser2"
+                            def paramstoretestuser2pw= "/eacms/testingkey/testuser2/pw"
+                            def paramstoretestuser2copy= "/eacms/testingkey/testuser2/oldkey"
+                            def paramstoretestuser2pwcopy= "/eacms/testingkey/testuser2/pw/oldkey"
+                            def paramstoretestuse3r= "/eacms/testingkey/testuser3"
+                            def paramstoretestuser3pw= "/eacms/testingkey/testuser3/pw"
+                            def paramstoretestuser3copy= "/eacms/testingkey/testuser3/oldkey"
+                            def paramstoretestuser3pwcopy= "/eacms/testingkey/testuser3/pw/oldkey"
+                            echo "Current Date: ${CURRENT_DATE}"
+                            USERS_FILE.each { user ->
+                                env.USER = user
+                                sh "echo 'Checking access keys for user: ${env.USER}' "
+                                def ACCESS_KEYS = sh(script: "aws iam list-access-keys --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                def ACTIVE_KEYS = []
+                                def INACTIVE_KEY_ID = ""
+
+                                if (ACCESS_KEYS) {
+                                    def keys = readJSON text: ACCESS_KEYS
+                                    keys.AccessKeyMetadata.each { key ->
+                                        def keyStatus = key.Status
+                                        def creationDate = key.CreateDate
+                                        def accessKeyId = key.AccessKeyId
+                                        if (accessKeyId) {
+                                        def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${accessKeyId}", returnStdout: true).trim()
+                                        def lastUsedDateRaw = readJSON text: lastUsed
+                                        def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
+                                        def lastUsedDate = "none"
+                                        def HumanLastUsedDate= "none"
+                                        if (serviceName != "N/A") {
+                                            lastUsedDate = sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim()
+                                            HumanLastUsedDate= sh(script: "date -d '@${lastUsedDate}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
+                                        }
+                                        if (keyStatus == "Active") {
+                                            echo "Active Key Found - Key ID: ${accessKeyId}, Creation Date: ${creationDate}, Last Used Date: ${HumanLastUsedDate}"
+                                            // Ensure all parts are correctly formatted and not null
+                                            if (accessKeyId && creationDate && lastUsedDate) {
+                                                ACTIVE_KEYS.add("${accessKeyId};${creationDate};${HumanLastUsedDate}")
+                                            } else {
+                                                 echo "Error: One or more parts of the key information are null or improperly formatted."
+                                            }
+                                        } else {
+                                            INACTIVE_KEY_ID = accessKeyId
+                                        }
+                                        }
+                                    }                               
+                                    if (ACTIVE_KEYS.size() == 1 && (INACTIVE_KEY_ID == null || INACTIVE_KEY_ID.isEmpty())) {
+                                        sh "echo 'User $USER has one active key and no other key. Checking conditions...' "
+                                        ACTIVE_KEYS.each { keyInfo ->
+                                        def keyInfosplit = keyInfo.split(";")
+                                        if (keyInfosplit.size() == 3) {
+                                           def keyId = keyInfosplit[0].trim()
+                                           def creationDate = keyInfosplit[1].trim()
+                                           def lastUsedDate = keyInfosplit[2].trim()
+                                           echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
+                                        if (!keyId || keyId.length() < 16) {
+                                            echo "Invalid or null Access Key ID: ${keyId}"
+                                            return
+                                        }
+                                        def activekeyCreationEpoch = sh(script: "date -d '${keyInfosplit[1]}' +%s", returnStdout: true).trim().toLong() 
+                                        def currentkeyEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() 
+                                        if (keyInfosplit[2] == "none" && (currentkeyEpoch - activekeyCreationEpoch) > (120)) { 
+                                            sh "aws iam delete-access-key --user-name ${env.USER} --access-key-id ${keyId}"
+                                            sh "echo 'Deleted inactive access key for user: ${env.USER} (Key ID: ${keyId})' "
+                                            def newOneOnlyAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                            def newOneOnlyAccessKey = readJSON text: newOneOnlyAccessKeyInfo
+                                            def newOnlyOneserviceaccountusers = """
+                                            User: ${env.USER}
+                                            Access Key ID: ${newOneOnlyAccessKey.AccessKey.AccessKeyId} 
+                                            Secret Access Key: ${newOneOnlyAccessKey.AccessKey.SecretAccessKey}
+                                            Keys created on : ${CURRENT_DATE}
+                                            """.stripIndent()
+                                            if (env.USER == "testuser"|| env.USER == "testuser1" || env.USER == "testuser2"|| env.USER == "testuser3" ) {
+                                                def existingContent = fileExists('parastoreviceaccountusers.txt') ? readFile('parastoreviceaccountusers.txt') : '' 
+                                                writeFile file: "parastoreviceaccountusers.txt", text: existingContent + newOnlyOneserviceaccountusers + "\n"
+                                            }
+                                            if (env.USER == "testuser7") {
+                                                def paramtestuser = sh(script: "aws ssm get-parameter --name ${paramstoretestuser} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuserpw = sh(script: "aws ssm get-parameter --name ${paramstoretestuserpw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser) { 
+                                                    def paramtestuserkeys = readJSON text: paramtestuser
+                                                    env.paramtestuservalue = paramtestuserkeys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuserType = paramtestuserkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestusercopy} --value ${env.paramtestuservalue} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser = sh(script: "aws ssm put-parameter --name ${paramstoretestuser} --value ${env.access} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuserpw) { 
+                                                    def paramtestuserpwkeys = readJSON text: paramusertestuserpw
+                                                    env.paramtestuserpwvalue = paramtestuserpwkeys.Parameter.Value
+                                                    def paramtestuserpwType = paramtestuserpwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpwcopy} --value ${env.paramtestuserpwvalue} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuserpw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpw} --value ${env.secret} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser1") {
+                                                def paramtestuser1 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser1pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser1) { 
+                                                    def paramtestuser1keys = readJSON text: paramtestuser1
+                                                    env.paramtestuser1value = paramtestuser1keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser1Type = paramtestuser1keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1copy} --value ${env.paramtestuser1value} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser1 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1} --value ${env.access} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser1pw) { 
+                                                    def paramtestuser1pwkeys = readJSON text: paramusertestuser1pw
+                                                    env.paramtestuser1pwvalue = paramtestuser1pwkeys.Parameter.Value
+                                                    def paramtestuser1pwType = paramtestuser1pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pwcopy} --value ${env.paramtestuser1pwvalue} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser1pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pw} --value ${env.secret} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser2") {
+                                                def paramtestuser2 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser2pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser2) { 
+                                                    def paramtestuser2keys = readJSON text: paramtestuser2
+                                                    env.paramtestuser2value = paramtestuser2keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser2Type = paramtestuser2keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2copy} --value ${env.paramtestuser2value} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser2 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2} --value ${env.access} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser2pw) { 
+                                                    def paramtestuser2pwkeys = readJSON text: paramusertestuser2pw
+                                                    env.paramtestuser2pwvalue = paramtestuser2pwkeys.Parameter.Value
+                                                    def paramtestuser2pwType = paramtestuser2pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pwcopy} --value ${env.paramtestuser2pwvalue} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser2pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pw} --value ${env.secret} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                              } else if (env.USER == "testuser3") {
+                                                def paramtestuser3 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser3pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser3pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser3) { 
+                                                    def paramtestuser3keys = readJSON text: paramtestuser3
+                                                    env.paramtestuser3value = paramtestuser3keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser3Type = paramtestuser3keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3copy} --value ${env.paramtestuser3value} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser3 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3} --value ${env.access} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser3pw) { 
+                                                    def paramtestuser3pwkeys = readJSON text: paramusertestuser3pw
+                                                    env.paramtestuser3pwvalue = paramtestuser3pwkeys.Parameter.Value
+                                                    def paramtestuser3pwType = paramtestuser3pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pwcopy} --value ${env.paramtestuser3pwvalue} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser3pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pw} --value ${env.secret} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }  
+                                            }
+                                            sh "echo 'Created new access keys for user: ${env.USER} and saved ' "
+                                            OLD_KEYS_USERS.add(env.USER)       
+                                        } else {
+                                            sh "echo 'The active key is not older than 90 days, no action taken. ' "
+                                        }
+                                        if (keyInfosplit[2] != "none" && (currentkeyEpoch - activekeyCreationEpoch) > (120)) {
+                                            def newOneOnlyAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                            def newOneOnlyAccessKey = readJSON text: newOneOnlyAccessKeyInfo
+                                            def newOnlyOneserviceaccountusers = """
+                                            User: ${env.USER}
+                                            Access Key ID: ${newOneOnlyAccessKey.AccessKey.AccessKeyId}
+                                            Secret Access Key: ${newOneOnlyAccessKey.AccessKey.SecretAccessKey} 
+                                            Keys created on : ${CURRENT_DATE}
+                                            """.stripIndent()
+                                            if (env.USER == "testuser"|| env.USER == "testuser1" || env.USER == "testuser2"|| env.USER == "testuser3" ) {
+                                                def existingContent = fileExists('parastoreviceaccountusers.txt') ? readFile('parastoreviceaccountusers.txt') : '' 
+                                                writeFile file: "parastoreviceaccountusers.txt", text: existingContent + newOnlyOneserviceaccountusers + "\n"
+                                            }
+                                            if (env.USER == "testuser7") {
+                                                def paramtestuser = sh(script: "aws ssm get-parameter --name ${paramstoretestuser} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuserpw = sh(script: "aws ssm get-parameter --name ${paramstoretestuserpw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser) { 
+                                                    def paramtestuserkeys = readJSON text: paramtestuser
+                                                    env.paramtestuservalue = paramtestuserkeys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuserType = paramtestuserkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestusercopy} --value ${env.paramtestuservalue} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser = sh(script: "aws ssm put-parameter --name ${paramstoretestuser} --value ${env.access} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuserpw) { 
+                                                    def paramtestuserpwkeys = readJSON text: paramusertestuserpw
+                                                    env.paramtestuserpwvalue = paramtestuserpwkeys.Parameter.Value
+                                                    def paramtestuserpwType = paramtestuserpwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpwcopy} --value ${env.paramtestuserpwvalue} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuserpw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpw} --value ${env.secret} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser1") {
+                                                def paramtestuser1 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser1pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser1) { 
+                                                    def paramtestuser1keys = readJSON text: paramtestuser1
+                                                    env.paramtestuser1value = paramtestuser1keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser1Type = paramtestuser1keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1copy} --value ${env.paramtestuser1value} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser1 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1} --value ${env.access} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser1pw) { 
+                                                    def paramtestuser1pwkeys = readJSON text: paramusertestuser1pw
+                                                    env.paramtestuser1pwvalue = paramtestuser1pwkeys.Parameter.Value
+                                                    def paramtestuser1pwType = paramtestuser1pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pwcopy} --value ${env.paramtestuser1pwvalue} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser1pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pw} --value ${env.secret} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser2") {
+                                                def paramtestuser2 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser2pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser2) { 
+                                                    def paramtestuser2keys = readJSON text: paramtestuser2
+                                                    env.paramtestuser2value = paramtestuser2keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser2Type = paramtestuser2keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2copy} --value ${env.paramtestuser2value} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser2 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2} --value ${env.access} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser2pw) { 
+                                                    def paramtestuser2pwkeys = readJSON text: paramusertestuser2pw
+                                                    env.paramtestuser2pwvalue = paramtestuser2pwkeys.Parameter.Value
+                                                    def paramtestuser2pwType = paramtestuser2pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pwcopy} --value ${env.paramtestuser2pwvalue} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser2pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pw} --value ${env.secret} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                              } else if (env.USER == "testuser3") {
+                                                def paramtestuser3 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser3pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser3pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser3) { 
+                                                    def paramtestuser3keys = readJSON text: paramtestuser3
+                                                    env.paramtestuser3value = paramtestuser3keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser3Type = paramtestuser3keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3copy} --value ${env.paramtestuser3value} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser3 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3} --value ${env.access} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser3pw) { 
+                                                    def paramtestuser3pwkeys = readJSON text: paramusertestuser3pw
+                                                    env.paramtestuser3pwvalue = paramtestuser3pwkeys.Parameter.Value
+                                                    def paramtestuser3pwType = paramtestuser3pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pwcopy} --value ${env.paramtestuser3pwvalue} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser3pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pw} --value ${env.secret} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                } 
+                                            }
+                                            sh "echo 'Created new access keys for user: ${env.USER} and saved ' "
+                                            OLD_KEYS_USERS.add(env.USER)
+                                         } else {
+                                                sh "echo 'The active key is not older than 90 days, no action taken. ' "
+                                                }
+                                         } else {
+                                                echo "Error: Unexpected keyInfo format: ${keyInfo}"
+                                                }
+                                         }
+                                    } else if (ACTIVE_KEYS.size() == 1 && INACTIVE_KEY_ID) {
+                                        sh "echo 'User $USER has one active key and one inactive key. Checking conditions...' "
+                                        ACTIVE_KEYS.each { keyInfo ->
+                                        def keyInfodetails = keyInfo.split(";")
+                                        if (keyInfodetails.size() == 3) {
+                                            def keyId = keyInfodetails[0].trim()
+                                            def creationDate = keyInfodetails[1].trim()
+                                            def lastUsedDate = keyInfodetails[2].trim()
+                                            // Debug: Print each keyInfo split result
+                                            echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
+                                        if (!keyId || keyId.length() < 16) {
+                                            echo "Invalid or null Access Key ID: ${keyId}"
+                                            return
+                                        }
+                                        def activeCreationEpoch = sh(script: "date -d '${keyInfodetails[1]}' +%s", returnStdout: true).trim().toLong() / 86400
+                                        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() / 86400
+
+                                        if (keyInfodetails[2] != "none" && (currentEpoch - activeCreationEpoch) > (20)) {
+                                            sh "aws iam delete-access-key --user-name ${env.USER} --access-key-id ${INACTIVE_KEY_ID}"
+                                            sh "echo 'Deleted inactive access key for user: ${env.USER} (Key ID: ${INACTIVE_KEY_ID})' "
+                                            def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                            def newAccessKey = readJSON text: newAccessKeyInfo
+                                            def newOnlyOneserviceaccountusers = """
+                                            User: ${env.USER}
+                                            Access Key ID: ${newAccessKey.AccessKey.AccessKeyId} 
+                                            Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} 
+                                            Keys created on : ${CURRENT_DATE}
+                                            """.stripIndent()
+                                            if (env.USER == "testuser"|| env.USER == "testuser1" || env.USER == "testuser2"|| env.USER == "testuser3" ) {
+                                                def existingContent = fileExists('parastoreviceaccountusers.txt') ? readFile('parastoreviceaccountusers.txt') : '' 
+                                                writeFile file: "parastoreviceaccountusers.txt", text: existingContent + newOnlyOneserviceaccountusers + "\n"
+                                            }
+                                            if (env.USER == "testuser7") {
+                                                def paramtestuser = sh(script: "aws ssm get-parameter --name ${paramstoretestuser} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuserpw = sh(script: "aws ssm get-parameter --name ${paramstoretestuserpw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser) { 
+                                                    def paramtestuserkeys = readJSON text: paramtestuser
+                                                    env.paramtestuservalue = paramtestuserkeys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuserType = paramtestuserkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestusercopy} --value ${env.paramtestuservalue} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser = sh(script: "aws ssm put-parameter --name ${paramstoretestuser} --value ${env.access} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuserpw) { 
+                                                    def paramtestuserpwkeys = readJSON text: paramusertestuserpw
+                                                    env.paramtestuserpwvalue = paramtestuserpwkeys.Parameter.Value
+                                                    def paramtestuserpwType = paramtestuserpwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestusernewpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpwcopy} --value ${env.paramtestuserpwvalue} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuserpw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpw} --value ${env.secret} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser1") {
+                                                def paramtestuser1 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser1pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser1) { 
+                                                    def paramtestuser1keys = readJSON text: paramtestuser1
+                                                    env.paramtestuser1value = paramtestuser1keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser1Type = paramtestuser1keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1copy} --value ${env.paramtestuser1value} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser1 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1} --value ${env.access} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser1pw) { 
+                                                    def paramtestuser1pwkeys = readJSON text: paramusertestuser1pw
+                                                    env.paramtestuser1pwvalue = paramtestuser1pwkeys.Parameter.Value
+                                                    def paramtestuser1pwType = paramtestuser1pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser1newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pwcopy} --value ${env.paramtestuser1pwvalue} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser1pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pw} --value ${env.secret} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                             } else if (env.USER == "testuser2") {
+                                                def paramtestuser2 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser2pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser2) { 
+                                                    def paramtestuser2keys = readJSON text: paramtestuser2
+                                                    env.paramtestuser2value = paramtestuser2keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser2Type = paramtestuser2keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2copy} --value ${env.paramtestuser2value} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser2 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2} --value ${env.access} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser2pw) { 
+                                                    def paramtestuser2pwkeys = readJSON text: paramusertestuser2pw
+                                                    env.paramtestuser2pwvalue = paramtestuser2pwkeys.Parameter.Value
+                                                    def paramtestuser2pwType = paramtestuser2pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser2newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pwcopy} --value ${env.paramtestuser2pwvalue} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser2pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pw} --value ${env.secret} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                }               
+                                              } else if (env.USER == "testuser3") {
+                                                def paramtestuser3 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                def paramusertestuser3pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser3pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                if (paramtestuser3) { 
+                                                    def paramtestuser3keys = readJSON text: paramtestuser3
+                                                    env.paramtestuser3value = paramtestuser3keys.Parameter.Value
+                                                    env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                    env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                    def paramtestuser3Type = paramtestuser3keys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3copy} --value ${env.paramtestuser3value} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                    def updatedparamtestuser3 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3} --value ${env.access} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                }
+                                                if (paramusertestuser3pw) { 
+                                                    def paramtestuser3pwkeys = readJSON text: paramusertestuser3pw
+                                                    env.paramtestuser3pwvalue = paramtestuser3pwkeys.Parameter.Value
+                                                    def paramtestuser3pwType = paramtestuser3pwkeys.Parameter.Type
+                                                    sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                    def paramtestuser3newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pwcopy} --value ${env.paramtestuser3pwvalue} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                    def updatedparamtestuser3pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pw} --value ${env.secret} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                } 
+                                            }
+                                            sh "echo 'Created new access keys for user: ${env.USER} and saved ' "
+                                            OLD_KEYS_USERS.add(env.USER)
+                                         } else {
+                                               sh "echo 'The active key is not older than 90 days, no action taken. ' "
+                                               }
+                                         } else {
+                                                 echo "Error: Unexpected keyInfo format: ${keyInfo}"
+                                                }
+                                         }
+                                     } else if (ACTIVE_KEYS.size() == 2) {
+                                        sh "echo 'User $env.USER has two active keys. Checking their last used dates...' "
+                                        def oldestKeyId = ""
+                                        def oldestLastUsedDateTs = ""
+                                        def oldestLastUsedDateHuman = ""
+                                        def keyWithNa = ""
+                                        def reservekeyna= ""
+                                            //Debug: Print active keys information
+                                            echo "Active Keys: ${ACTIVE_KEYS}"
+                                            ACTIVE_KEYS.each { keyInfo ->
+                                            // Enhanced debugging: Print raw keyInfo
+                                            echo "Raw KeyInfo: ${keyInfo}"
+                                            // Adjusted split logic to handle potential issues
+                                            def keyInfoParts = keyInfo.split(";")
+                                            if (keyInfoParts.size() == 3) {
+                                                def keyId = keyInfoParts[0].trim()
+                                                def creationDate = keyInfoParts[1].trim()
+                                                def lastUsedDate = keyInfoParts[2].trim()
+                                                // Debug: Print each keyInfo split result
+                                                echo "KeyInfo Split - Key ID: ${keyId}, Creation Date: ${creationDate}, Last Used Date: ${lastUsedDate}"
+                                            if (!keyId || keyId.length() < 16) {
+                                                echo "Invalid or null Access Key ID: ${keyId}"
+                                                return
+                                            }
+                                            def lastUsed = sh(script: "aws iam get-access-key-last-used --access-key-id ${keyId}", returnStdout: true).trim()
+                                            def lastUsedDateRaw = readJSON text: lastUsed
+                                            def serviceName = lastUsedDateRaw.AccessKeyLastUsed.ServiceName
+                                            def lastUsedDateTs = serviceName != "N/A" ? sh(script: "date -d '${lastUsedDateRaw.AccessKeyLastUsed.LastUsedDate}' +%s", returnStdout: true).trim().toLong() : "invalid"
+                                            def oldestCreationDate = sh(script: "date -d '${keyInfoParts[1]}' +%s", returnStdout: true).trim().toLong() / 86400
+                                            def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() / 86400
+                                            // Debug: Print last used date information
+                                            echo "Key ID: ${keyId}, Last Used Date TS: ${lastUsedDateTs}, ServiceName: ${serviceName}"
+                                            if (serviceName == "N/A") {
+                                                keyWithNa = keyId + ";" + creationDate + ";" + lastUsedDate
+                                                sh "echo 'Key ${keyId} has never been used (ServiceName: N/A), marking it for deletion. ' "
+                                             } else if (lastUsedDateTs != "invalid" && (!oldestLastUsedDateTs || lastUsedDateTs < oldestLastUsedDateTs)) {
+                                                oldestLastUsedDateTs = lastUsedDateTs
+                                                //oldestKeyId = keyId
+                                                oldestKeyId = keyId + ";" + creationDate + ";" + lastUsedDate
+                                                oldestLastUsedDateHuman = sh(script: "date -d '@${lastUsedDateTs}' '+%Y-%m-%d %H:%M:%S %Z'", returnStdout: true).trim()
+                                                sh "echo 'The oldest key is ${oldestKeyId} and was last used on ${oldestLastUsedDateHuman}' "
+                                             }
+                                          } else {
+                                                 echo "Error: Unexpected keyInfo format: ${keyInfo}"
+                                                 }    
+                                            echo " Now KeyWithNa: ${keyWithNa}, OldestKeyId: ${oldestKeyId}"
+                                            if (keyWithNa && reservekeyna == '') {
+                                                try {
+                                                    def keyNaInfoParts = keyWithNa.split(";")
+                                                    if (keyNaInfoParts.size() == 3) {
+                                                        def keyNaCreationDate = sh(script: "date -d '${keyNaInfoParts[1]}' +%s", returnStdout: true).trim().toLong() / 86400
+                                                        def KeyNacurrentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() / 86400
+                                                        if ((KeyNacurrentEpoch - keyNaCreationDate) > (90)) {  
+                                                           sh "aws iam delete-access-key --user-name ${env.USER} --access-key-id ${keyNaInfoParts[0]}"
+                                                           sh "echo 'Deleted access key that was never used for user: ${env.USER} and ${keyNaInfoParts[0]}' "
+                                                           def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                                           def newAccessKey = readJSON text: newAccessKeyInfo
+                                                           def newOnlyOneserviceaccountusers = """
+                                                               User: ${env.USER} 
+                                                               Access Key ID: ${newAccessKey.AccessKey.AccessKeyId}
+                                                               Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey} 
+                                                               Keys created on : ${CURRENT_DATE}
+                                                               """.stripIndent()
+                                                               if (env.USER == "testuser"|| env.USER == "testuser1" || env.USER == "testuser2"|| env.USER == "testuser3" ) {
+                                                                    def existingContent = fileExists('parastoreviceaccountusers.txt') ? readFile('parastoreviceaccountusers.txt') : '' 
+                                                                    writeFile file: "parastoreviceaccountusers.txt", text: existingContent + newOnlyOneserviceaccountusers + "\n"
+                                                                }
+                                                                if (env.USER == "testuser7") {
+                                                                    def paramtestuser = sh(script: "aws ssm get-parameter --name ${paramstoretestuser} --with-decryption --output json", returnStdout: true).trim() 
+                                                                    def paramusertestuserpw = sh(script: "aws ssm get-parameter --name ${paramstoretestuserpw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                    if (paramtestuser) { 
+                                                                        def paramtestuserkeys = readJSON text: paramtestuser
+                                                                        env.paramtestuservalue = paramtestuserkeys.Parameter.Value
+                                                                        env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                        env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                        def paramtestuserType = paramtestuserkeys.Parameter.Type
+                                                                        sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                        def paramtestusernewcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestusercopy} --value ${env.paramtestuservalue} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                                        def updatedparamtestuser = sh(script: "aws ssm put-parameter --name ${paramstoretestuser} --value ${env.access} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                                    }
+                                                                    if (paramusertestuserpw) { 
+                                                                        def paramtestuserpwkeys = readJSON text: paramusertestuserpw
+                                                                        env.paramtestuserpwvalue = paramtestuserpwkeys.Parameter.Value
+                                                                        def paramtestuserpwType = paramtestuserpwkeys.Parameter.Type
+                                                                        sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                        def paramtestusernewpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpwcopy} --value ${env.paramtestuserpwvalue} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        def updatedparamtestuserpw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpw} --value ${env.secret} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                                    }    
+                                                                    } else if (env.USER == "testuser1") {
+                                                                        def paramtestuser1 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        def paramusertestuser1pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser1) { 
+                                                                            def paramtestuser1keys = readJSON text: paramtestuser1
+                                                                            env.paramtestuser1value = paramtestuser1keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser1Type = paramtestuser1keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser1newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1copy} --value ${env.paramtestuser1value} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser1 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1} --value ${env.access} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser1pw) { 
+                                                                            def paramtestuser1pwkeys = readJSON text: paramusertestuser1pw
+                                                                            env.paramtestuser1pwvalue = paramtestuser1pwkeys.Parameter.Value
+                                                                            def paramtestuser1pwType = paramtestuser1pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser1newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pwcopy} --value ${env.paramtestuser1pwvalue} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser1pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pw} --value ${env.secret} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }  
+                                                                        } else if (env.USER == "testuser2") {
+                                                                            def paramtestuser2 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2} --with-decryption --output json", returnStdout: true).trim() 
+                                                                            def paramusertestuser2pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser2) { 
+                                                                            def paramtestuser2keys = readJSON text: paramtestuser2
+                                                                            env.paramtestuser2value = paramtestuser2keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser2Type = paramtestuser2keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser2newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2copy} --value ${env.paramtestuser2value} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser2 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2} --value ${env.access} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser2pw) { 
+                                                                            def paramtestuser2pwkeys = readJSON text: paramusertestuser2pw
+                                                                            env.paramtestuser2pwvalue = paramtestuser2pwkeys.Parameter.Value
+                                                                            def paramtestuser2pwType = paramtestuser2pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser2newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pwcopy} --value ${env.paramtestuser2pwvalue} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser2pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pw} --value ${env.secret} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }  
+                                                                        } else if (env.USER == "testuser3") {
+                                                                            def paramtestuser3 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                                            def paramusertestuser3pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser3pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser3) { 
+                                                                            def paramtestuser3keys = readJSON text: paramtestuser3
+                                                                            env.paramtestuser3value = paramtestuser3keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser3Type = paramtestuser3keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser3newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3copy} --value ${env.paramtestuser3value} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser3 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3} --value ${env.access} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser3pw) { 
+                                                                            def paramtestuser3pwkeys = readJSON text: paramusertestuser3pw
+                                                                            env.paramtestuser3pwvalue = paramtestuser3pwkeys.Parameter.Value
+                                                                            def paramtestuser3pwType = paramtestuser3pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser3newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pwcopy} --value ${env.paramtestuser3pwvalue} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser3pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pw} --value ${env.secret} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }  
+                                                                }
+                                                               sh "echo 'Created new access keys for user: ${env.USER} and saved' "
+                                                               OLD_KEYS_USERS.add(env.USER)
+                                                          }  else {
+                                                                sh "echo 'The active key is not older than 90 days, no action taken.' "
+                                                                }
+                                                      } else    {
+                                                                echo "Error: Invalid format for oldestKeyId: ${keyWithNa}"
+                                                                }
+                                                     } catch (Exception e) {
+                                                                echo "Error processing KeyNa key: ${e}"
+                                                                }         
+                                               } else if (keyWithNa && reservekeyna != '') {
+                                                   try {
+                                                      def keyNaInfoParts = keyWithNa.split(";")
+                                                      if (keyNaInfoParts.size() == 3) {
+                                                          def keyNaCreationDate = sh(script: "date -d '${keyNaInfoParts[1]}' +%s", returnStdout: true).trim().toLong() / 86400
+                                                          def KeyNacurrentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() / 86400
+                                                          if ((KeyNacurrentEpoch - keyNaCreationDate) > (90)) { 
+                                                              sh "aws iam delete-access-key --user-name ${env.USER} --access-key-id ${keyNaInfoParts[0]}"
+                                                              sh "echo 'Deleted access key that was never used for user: ${env.USER} and ${keyNaInfoParts[0]}' "
+                                                          } else {
+                                                                 sh "echo 'The active key is not older than 90 days, no action taken.' "
+                                                                 }
+                                                       } else {
+                                                               echo "Error: Invalid format for thisKeywithNa: ${keyWithNa}"
+                                                              }
+                                                       } catch (Exception e) {
+                                                                echo "Error processing KeyNa key: ${e}"
+                                                                }  
+                                                  } 
+                                                    reservekeyna= keyWithNa
+                                              }
+                                              if (oldestKeyId && !keyWithNa) {
+                                                  try {
+                                                    def keyInfoParts = oldestKeyId.split(";")
+                                                    if (keyInfoParts.size() == 3) {
+                                                        echo " checking if I should delete oldestKeyId :  ${oldestKeyId} "
+                                                        def oldestCreationDate = sh(script: "date -d '${keyInfoParts[1]}' +%s", returnStdout: true).trim().toLong() / 86400
+                                                        def currentEpoch = sh(script: "date +%s", returnStdout: true).trim().toLong() / 86400
+                                                        if ((currentEpoch - oldestCreationDate) > (90)) { 
+                                                           sh "aws iam delete-access-key --user-name ${env.USER} --access-key-id ${keyInfoParts[0]}"
+                                                           sh "echo 'Deleted oldest active access key for user: ${env.USER} (Key ID: ${keyInfoParts[0]}), Last Used: ${oldestLastUsedDateHuman}'"
+                                                           //def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).
+                                                           def newAccessKeyInfo = sh(script: "aws iam create-access-key --user-name ${env.USER} --output json", returnStdout: true).trim()
+                                                           def newAccessKey = readJSON text: newAccessKeyInfo
+                                                           def serviceaccountusers = """
+                                                           User: ${env.USER} 
+                                                           Access Key ID: ${newAccessKey.AccessKey.AccessKeyId}
+                                                           Secret Access Key: ${newAccessKey.AccessKey.SecretAccessKey}
+                                                           Keys created on : ${CURRENT_DATE}
+                                                           """.stripIndent()
+                                                           if (env.USER == "testuser"|| env.USER == "testuser1" || env.USER == "testuser2"|| env.USER == "testuser3" ) {
+                                                                    def existingContent = fileExists('parastoreviceaccountusers.txt') ? readFile('parastoreviceaccountusers.txt') : '' 
+                                                                    writeFile file: "parastoreviceaccountusers.txt", text: existingContent + newOnlyOneserviceaccountusers + "\n"
+                                                                }
+                                                                if (env.USER == "testuser7") {
+                                                                    def paramtestuser = sh(script: "aws ssm get-parameter --name ${paramstoretestuser} --with-decryption --output json", returnStdout: true).trim() 
+                                                                    def paramusertestuserpw = sh(script: "aws ssm get-parameter --name ${paramstoretestuserpw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                    if (paramtestuser) { 
+                                                                        def paramtestuserkeys = readJSON text: paramtestuser
+                                                                        env.paramtestuservalue = paramtestuserkeys.Parameter.Value
+                                                                        env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                        env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                        def paramtestuserType = paramtestuserkeys.Parameter.Type
+                                                                        sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                        def paramtestusernewcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestusercopy} --value ${env.paramtestuservalue} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                                        def updatedparamtestuser = sh(script: "aws ssm put-parameter --name ${paramstoretestuser} --value ${env.access} --type ${paramtestuserType} --overwrite --output json", returnStdout: true).trim()
+                                                                    }
+                                                                    if (paramusertestuserpw) { 
+                                                                        def paramtestuserpwkeys = readJSON text: paramusertestuserpw
+                                                                        env.paramtestuserpwvalue = paramtestuserpwkeys.Parameter.Value
+                                                                        def paramtestuserpwType = paramtestuserpwkeys.Parameter.Type
+                                                                        sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                        def paramtestusernewpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpwcopy} --value ${env.paramtestuserpwvalue} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        def updatedparamtestuserpw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuserpw} --value ${env.secret} --type ${paramtestuserpwType} --overwrite --output json', returnStdout: true).trim()
+                                                                    }    
+                                                                    } else if (env.USER == "testuser1") {
+                                                                        def paramtestuser1 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        def paramusertestuser1pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser1) { 
+                                                                            def paramtestuser1keys = readJSON text: paramtestuser1
+                                                                            env.paramtestuser1value = paramtestuser1keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser1Type = paramtestuser1keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser1newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1copy} --value ${env.paramtestuser1value} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser1 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser1} --value ${env.access} --type ${paramtestuser1Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser1pw) { 
+                                                                            def paramtestuser1pwkeys = readJSON text: paramusertestuser1pw
+                                                                            env.paramtestuser1pwvalue = paramtestuser1pwkeys.Parameter.Value
+                                                                            def paramtestuser1pwType = paramtestuser1pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser1newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pwcopy} --value ${env.paramtestuser1pwvalue} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser1pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser1pw} --value ${env.secret} --type ${paramtestuser1pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }  
+                                                                        } else if (env.USER == "testuser2") {
+                                                                            def paramtestuser2 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2} --with-decryption --output json", returnStdout: true).trim() 
+                                                                            def paramusertestuser2pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser2pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser2) { 
+                                                                            def paramtestuser2keys = readJSON text: paramtestuser2
+                                                                            env.paramtestuser2value = paramtestuser2keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser2Type = paramtestuser2keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser2newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2copy} --value ${env.paramtestuser2value} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser2 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser2} --value ${env.access} --type ${paramtestuser2Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser2pw) { 
+                                                                            def paramtestuser2pwkeys = readJSON text: paramusertestuser2pw
+                                                                            env.paramtestuser2pwvalue = paramtestuser2pwkeys.Parameter.Value
+                                                                            def paramtestuser2pwType = paramtestuser2pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser2newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pwcopy} --value ${env.paramtestuser2pwvalue} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser2pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser2pw} --value ${env.secret} --type ${paramtestuser2pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }  
+                                                                        } else if (env.USER == "testuser3") {
+                                                                            def paramtestuser3 = sh(script: "aws ssm get-parameter --name ${paramstoretestuser1} --with-decryption --output json", returnStdout: true).trim() 
+                                                                            def paramusertestuser3pw = sh(script: "aws ssm get-parameter --name ${paramstoretestuser3pw} --with-decryption --output json", returnStdout: true).trim() 
+                                                                        if (paramtestuser3) { 
+                                                                            def paramtestuser3keys = readJSON text: paramtestuser3
+                                                                            env.paramtestuser3value = paramtestuser3keys.Parameter.Value
+                                                                            env.secret= "${newOneOnlyAccessKey.AccessKey.SecretAccessKey}"
+                                                                            env.access= "${newOneOnlyAccessKey.AccessKey.AccessKeyId}"
+                                                                            def paramtestuser3Type = paramtestuser3keys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser3newcopy = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3copy} --value ${env.paramtestuser3value} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                                            def updatedparamtestuser3 = sh(script: "aws ssm put-parameter --name ${paramstoretestuser3} --value ${env.access} --type ${paramtestuser3Type} --overwrite --output json", returnStdout: true).trim()
+                                                                        }
+                                                                        if (paramusertestuser3pw) { 
+                                                                            def paramtestuser3pwkeys = readJSON text: paramusertestuser3pw
+                                                                            env.paramtestuser3pwvalue = paramtestuser3pwkeys.Parameter.Value
+                                                                            def paramtestuser3pwType = paramtestuser3pwkeys.Parameter.Type
+                                                                            sh "echo '${newOneOnlyAccessKey.AccessKey.AccessKeyId}'"
+                                                                            def paramtestuser3newpwcopy = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pwcopy} --value ${env.paramtestuser3pwvalue} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                            def updatedparamtestuser3pw = sh(script: 'aws ssm put-parameter --name ${paramstoretestuser3pw} --value ${env.secret} --type ${paramtestuser3pwType} --overwrite --output json', returnStdout: true).trim()
+                                                                        }     
+                                                                    }
+                                                                sh "echo 'Created new access keys for user: ${env.USER} and saved' "
+                                                               OLD_KEYS_USERS.add(env.USER)
+                                                        } else {
+                                                               sh "echo 'The active key is not older than 90 days, no action taken.' "
+                                                               }      
+                                                      } else   {
+                                                               echo "Error: Invalid format for oldestKeyId: ${oldestKeyId}"
+                                                               }
+                                     
+                                                   } catch (Exception e) {
+                                                               echo "Error processing oldest key: ${e}"
+                                                               }
+                                                }
+                                        }  else {
+                                                 sh "echo 'No valid conditions met for user: ${env.USER}.' "
+                                                }  
+                                      } else {
+                                               sh "echo 'No access keys found for user: ${env.USER}' "
+                                             }  
+                                   }
+
+                        // Notify users about old keys rotation
+                        if (OLD_KEYS_USERS.size() > 0) {
+                            sh "echo 'Notification: The following users had old keys rotated: ${OLD_KEYS_USERS.join(", ")}' "
+                        }
+                    }
+                }
+            }
+        }
+        stage('Encrypt File') {
+            steps {
+                container('zip') {
+                    script {
+                        
+                        try {
+                            withCredentials([string(credentialsId: 'pega_password', variable: 'pega_password')]) {
+                                if (fileExists('pegasbeserviceaccountusers.txt')) {
+                                    sh """
+                                    apk add --no-cache zip           
+                                    zip -P $pega_password pegasbeserviceaccountusers.zip pegasbeserviceaccountusers.txt
+                                    """
+                                } 
+                            }
+                         } catch (Exception e) { 
+                            echo "Error with pega_password: ${e.getMessage()}" 
+                            currentBuild.result = 'FAILURE'
+                            echo "failureOccurred set to true"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    
+    post {
+        success {
+            script {
+                    if (fileExists('pegasbeserviceaccountusers.zip')) {
+                         emailext (
+                                to : 'michael.ngninkeu@sparksoftcorp.com',
+                                subject: 'Keys Rotation for pegasbeserviceaccountusers',
+                                body:'''
+                                    Hello,
+                                    Please find the pega sbe service account user access keys file attached. 
+                                    '''.stripIndent(),
+                                 
+                                attachmentsPattern: "pegasbeserviceaccountusers.zip"
+                            )
+                    }
+            }
+        }
+        failure {
+              
+             script {
+                        emailext (
+                            to : 'michael.ngninkeu@sparksoftcorp.com',
+                            subject: 'Failure on Service Account Users keys Rotation pipeline',
+                            body:'''
+                                Hello,
+                                A failure occurred during the key rotation pipeline execution. Please review the details and take necessary action. 
+                                Best regards!
+                                '''.stripIndent()
+                             )
+                 if (fileExists('proserviceaccountusers.zip')) {
+                     emailext (
+                            to : 'michael.ngninkeu@sparksoftcorp.com',
+                            subject: 'Keys Rotation for proserviceaccountusers',
+                            body: '''
+                                  Hello,
+                                  Please find the production service account user access keys file attached.
+                                  Best regards!
+                                  '''.stripIndent(),
+                            attachmentsPattern: "proserviceaccountusers.zip"
+                    )
+                 }
+            }
+         }
+     }   
+}
